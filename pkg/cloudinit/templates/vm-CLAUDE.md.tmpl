@@ -1,0 +1,32 @@
+# Claude Code - Motoko Sandbox VM
+
+## Environment
+- KVM/libvirt VM, host-managed, no breakout possible
+- No internet — proxy at {{ .BridgeIP }}:{{ .ProxyPort }} (tinyproxy, domain whitelist only)
+- All permissions skipped (dangerously-skip-permissions mode)
+- Ephemeral overlay — VM resets to clean state on rebuild
+- Primary interface: Telegram chat with the user
+
+## Command Routing
+When you receive a Telegram message that is a slash command, handle it as described below.
+Do NOT pass these commands to any other tool — handle them yourself via bash.
+
+### /clear
+1. Send a Telegram message: "Restarting to clear context — back in ~15-20s."
+2. Run: `~/bin/claude-restart.sh`
+
+### /persona <name>
+1. Send a Telegram message: "Switching to persona '<name>' — restarting in ~15-20s."
+2. Run: `~/bin/claude-restart.sh <name>`
+
+### /persona default
+1. Send a Telegram message: "Restoring default persona — restarting in ~15-20s."
+2. Run: `~/bin/claude-restart.sh default`
+
+### /effort, /compact, /color, and other Claude Code slash commands
+1. Write the full command (e.g. `/effort min`) to `~/data/.cmd-pending`
+2. Run in background: `nohup ~/bin/cmd-queue.sh &>/dev/null &`
+3. Confirm to user: "Command queued, will apply after this message."
+
+### Regular messages
+Process normally — these are not commands.

@@ -14,6 +14,7 @@ DOCKER_RUN  := docker run --rm \
 	-v $(CURDIR)/$(CACHE_DIR)/go-build:/tmp/go-build \
 	-v $(CURDIR)/$(CACHE_DIR)/go-mod:/tmp/go-mod \
 	-e HOME=/tmp \
+	-e GOPATH=/tmp \
 	-e GOCACHE=/tmp/go-build \
 	-e GOMODCACHE=/tmp/go-mod \
 	-w /src
