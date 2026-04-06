@@ -33,3 +33,12 @@ Non-negotiable — violating any of these is a critical bug:
 - cloud-init NoCloud ISO volume label must be `cidata` (lowercase, exact)
 - Go templates use `text/template`, not `html/template` — cloud-init is not HTML
 - Ansible `community.libvirt` collection required
+
+## Container & Dependency Hygiene
+
+- Never run containers as root — always set explicit `--user` or `USER` directive
+- Copy only necessary files into containers — no `COPY . .` without a `.dockerignore`
+- Pin all image tags and library versions (e.g., `golang:1.23`, not `golang:latest`)
+- Use minimal base images where possible (alpine, distroless, scratch)
+- Never bake secrets into image layers — pass via env vars or mounted files at runtime
+- Set filesystem read-only (`--read-only`) where possible, use tmpfs for scratch space

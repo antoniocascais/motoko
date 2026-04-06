@@ -2,12 +2,14 @@ APP_NAME    := motoko
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 DIST_DIR    := dist
 
-GO_IMAGE    := golang:1.23
+GO_IMAGE    := golang:1.23-alpine
 LINT_IMAGE  := golangci/golangci-lint:v2.1.6
 CACHE_DIR   := .cache
 
 DOCKER_RUN  := docker run --rm \
 	--user $(shell id -u):$(shell id -g) \
+	--read-only \
+	--tmpfs /tmp:rw,exec \
 	-v $(CURDIR):/src \
 	-v $(CURDIR)/$(CACHE_DIR)/go-build:/tmp/go-build \
 	-v $(CURDIR)/$(CACHE_DIR)/go-mod:/tmp/go-mod \
