@@ -1,0 +1,37 @@
+#!/bin/bash
+# Restarts the Claude Code session via systemd
+# Usage: claude-restart.sh [persona]
+
+HOME_DIR="/home/{{ .VMUser }}"
+PERSONA_DIR="$HOME_DIR/data/personas"
+CLAUDE_MD="$HOME_DIR/CLAUDE.md"
+CLAUDE_MD_BACKUP="$HOME_DIR/CLAUDE.md.base"
+LOG="$HOME_DIR/data/restart.log"
+
+echo "$(date -Iseconds) Restart requested. Persona: ${1:-default}" >> "$LOG"
+
+if [ -n "$1" ] && [ "$1" != "default" ]; then
+    PERSONA_FILE="$PERSONA_DIR/$1.md"
+    if [ -f "$PERSONA_FILE" ]; then
+        if [ ! -f "$CLAUDE_MD_BACKUP" ]; then
+            cp "$CLAUDE_MD" "$CLAUDE_MD_BACKUP"
+        fi
+        cp "$CLAUDE_MD_BACKUP" "$CLAUDE_MD"
+        echo "" >> "$CLAUDE_MD"
+        echo "# Active Persona" >> "$CLAUDE_MD"
+        cat "$PERSONA_FILE" >> "$CLAUDE_MD"
+        echo "$(date -Iseconds) Persona '$1' applied to CLAUDE.md" >> "$LOG"
+    else
+        echo "$(date -Iseconds) ERROR: Persona file not found: $PERSONA_FILE" >> "$LOG"
+        exit 1
+    fi
+elif [ "$1" = "default" ] && [ -f "$CLAUDE_MD_BACKUP" ]; then
+    cp "$CLAUDE_MD_BACKUP" "$CLAUDE_MD"
+    echo "$(date -Iseconds) Restored default CLAUDE.md" >> "$LOG"
+fi
+
+# Restart via systemd — must detach fully since we're killing our own parent
+echo "$(date -Iseconds) Restarting claude-assistant service..." >> "$LOG"
+nohup bash -c 'sleep 2 && systemctl --user restart claude-assistant.service && echo "$(date -Iseconds) Restart complete" >> '"$LOG" &>/dev/null &
+disown
+echo "$(date -Iseconds) Restart scheduled (2s delay)" >> "$LOG"

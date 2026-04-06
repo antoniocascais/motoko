@@ -1,0 +1,39 @@
+#!/bin/bash
+# Sends queued commands to Claude Code via tmux after prompt becomes idle
+
+CMD_FILE="/home/{{ .VMUser }}/data/.cmd-pending"
+TMUX_SESSION="claude"
+POLL_INTERVAL=1
+MAX_WAIT=60
+
+if [ ! -f "$CMD_FILE" ]; then
+    echo "No pending command"
+    exit 0
+fi
+
+CMD=$(cat "$CMD_FILE")
+if [ -z "$CMD" ]; then
+    rm -f "$CMD_FILE"
+    exit 0
+fi
+
+elapsed=0
+while [ "$elapsed" -lt "$MAX_WAIT" ]; do
+    pane=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -4)
+
+    # Claude Code spinner phrases — brittle, tied to CC's internal UI strings
+    if [[ "$pane" == *'❯'* ]] && [[ "$pane" == *'bypass permissions'* ]]; then
+        if ! echo "$pane" | grep -qE '(Running|thought for|Brewing|Perusing|Grooving|Symbioting)'; then
+            sleep 0.5
+            tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
+            rm -f "$CMD_FILE"
+            exit 0
+        fi
+    fi
+
+    sleep "$POLL_INTERVAL"
+    elapsed=$((elapsed + 1))
+done
+
+# Leave CMD_FILE intact so caller can retry
+exit 1

@@ -1,0 +1,108 @@
+#cloud-config
+hostname: {{ .Hostname }}
+locale: {{ .Locale }}
+timezone: {{ .Timezone }}
+
+users:
+  - name: {{ .VMUser }}
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+{{ range .SSHAuthorizedKeys }}      - {{ . }}
+{{ end }}
+write_files:
+  - path: /etc/sysctl.d/99-disable-ipv6.conf
+    content: |
+      net.ipv6.conf.all.disable_ipv6 = 1
+      net.ipv6.conf.default.disable_ipv6 = 1
+  - path: /etc/apt/apt.conf.d/90proxy
+    content: |
+      Acquire::http::Proxy "{{ .ProxyURL }}";
+      Acquire::https::Proxy "{{ .ProxyURL }}";
+  - path: /etc/environment
+    content: |
+      https_proxy={{ .ProxyURL }}
+      HTTPS_PROXY={{ .ProxyURL }}
+      http_proxy={{ .ProxyURL }}
+      HTTP_PROXY={{ .ProxyURL }}
+      no_proxy=localhost,127.0.0.1
+  - path: /etc/hosts
+    content: |
+      127.0.0.1 localhost
+      127.0.1.1 {{ .Hostname }}
+      {{ .BridgeIP }} proxy
+  - path: /home/{{ .VMUser }}/.config/systemd/user/claude-assistant.service
+    content: |
+      [Unit]
+      Description=Claude Code Telegram Assistant
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=forking
+      WorkingDirectory=/home/{{ .VMUser }}/data
+      ExecStart=/usr/bin/tmux new-session -d -s claude '/usr/local/bin/claude --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official'
+      ExecStartPost=/bin/bash -c 'sleep 5 && /usr/bin/tmux send-keys -t claude Enter && sleep 3 && /usr/bin/tmux send-keys -t claude Enter'
+      ExecStop=/usr/bin/tmux kill-session -t claude
+      Restart=on-failure
+      RestartSec=10
+      EnvironmentFile=/home/{{ .VMUser }}/.claude-env
+
+      [Install]
+      WantedBy=default.target
+  - path: /home/{{ .VMUser }}/.claude/channels/telegram/.env
+    permissions: "0600"
+    content: |
+      TELEGRAM_BOT_TOKEN={{ .TelegramBotToken }}
+  - path: /home/{{ .VMUser }}/.claude-env
+    permissions: "0600"
+    content: |
+      TELEGRAM_BOT_TOKEN={{ .TelegramBotToken }}
+      https_proxy={{ .ProxyURL }}
+      HTTPS_PROXY={{ .ProxyURL }}
+  - path: /home/{{ .VMUser }}/.bash_aliases
+    content: |
+      alias claude='claude --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official'
+  - path: /home/{{ .VMUser }}/CLAUDE.md
+    content: |
+{{ indent 6 .ClaudeMD }}
+  - path: /home/{{ .VMUser }}/bin/claude-restart.sh
+    permissions: "0755"
+    content: |
+{{ indent 6 .ClaudeRestartSh }}
+  - path: /home/{{ .VMUser }}/bin/cmd-queue.sh
+    permissions: "0755"
+    content: |
+{{ indent 6 .CmdQueueSh }}
+
+disk_setup:
+  /dev/vdb:
+    table_type: none
+    overwrite: false
+
+fs_setup:
+  - device: /dev/vdb
+    filesystem: ext4
+    overwrite: false
+
+mounts:
+  - [/dev/vdb, "/home/{{ .VMUser }}/data", ext4, "nosuid,nodev,nofail", "0", "2"]
+
+runcmd:
+  - sysctl --system
+  - systemctl disable --now systemd-resolved
+  - rm -f /etc/resolv.conf
+  - printf '# DNS disabled - all egress goes through proxy\n' > /etc/resolv.conf
+  - chattr +i /etc/resolv.conf
+  - systemctl disable cloud-init.service
+  - mkdir -p /home/{{ .VMUser }}/data
+  - chown {{ .VMUser }}:{{ .VMUser }} /home/{{ .VMUser }}/data
+  - rm -rf /home/{{ .VMUser }}/data/.claude
+  - rm -f /home/{{ .VMUser }}/data/CLAUDE.md
+  - rm -f /home/{{ .VMUser }}/data/.bashrc
+  - rm -f /home/{{ .VMUser }}/data/.profile
+  - chown -R {{ .VMUser }}:{{ .VMUser }} /home/{{ .VMUser }}
+  - loginctl enable-linger {{ .VMUser }}
+  - sudo -u {{ .VMUser }} systemctl --user daemon-reload
+  - sudo -u {{ .VMUser }} systemctl --user enable claude-assistant.service
+  - rm -rf /var/lib/cloud/instances /run/cloud-init
