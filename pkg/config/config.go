@@ -40,6 +40,7 @@ type Network struct {
 type Proxy struct {
 	Port           int      `yaml:"port"`
 	AllowedDomains []string `yaml:"allowed_domains"`
+	FilterFile     string   `yaml:"filter_file"`
 }
 
 type VMDefaults struct {
@@ -80,6 +81,7 @@ func DefaultConfig() *Config {
 				`^platform\.claude\.com$`,
 				`^api\.telegram\.org$`,
 			},
+			FilterFile: "/etc/tinyproxy/allowed-domains",
 		},
 		VMDefaults: VMDefaults{
 			VCPUs:          4,
@@ -94,12 +96,21 @@ func DefaultConfig() *Config {
 	}
 }
 
-func DefaultConfigPath() string {
+// ConfigDir returns the motoko configuration directory (~/.config/motoko).
+func ConfigDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "motoko", "config.yml")
+	return filepath.Join(home, ".config", "motoko")
+}
+
+func DefaultConfigPath() string {
+	dir := ConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "config.yml")
 }
 
 func Load(path string) (*Config, error) {
