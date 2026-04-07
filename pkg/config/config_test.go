@@ -24,10 +24,30 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestConfigDir(t *testing.T) {
+	dir := ConfigDir()
+	if dir == "" {
+		t.Fatal("ConfigDir() returned empty string")
+	}
+	if !strings.HasSuffix(dir, filepath.Join(".config", "motoko")) {
+		t.Fatalf("unexpected config dir: %s", dir)
+	}
+}
+
+func TestConfigDir_NotContainConfigYml(t *testing.T) {
+	dir := ConfigDir()
+	if strings.Contains(dir, "config.yml") {
+		t.Error("ConfigDir() should return the directory, not the file path")
+	}
+}
+
 func TestDefaultConfigPath(t *testing.T) {
 	path := DefaultConfigPath()
 	if !strings.HasSuffix(path, filepath.Join(".config", "motoko", "config.yml")) {
 		t.Fatalf("unexpected default path: %s", path)
+	}
+	if !strings.HasPrefix(path, ConfigDir()) {
+		t.Fatalf("DefaultConfigPath() should be under ConfigDir(), got %s", path)
 	}
 }
 
@@ -135,6 +155,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if len(cfg.Proxy.AllowedDomains) != len(defaults.Proxy.AllowedDomains) {
 		t.Errorf("AllowedDomains len = %d, want %d", len(cfg.Proxy.AllowedDomains), len(defaults.Proxy.AllowedDomains))
+	}
+	if cfg.Proxy.FilterFile != defaults.Proxy.FilterFile {
+		t.Errorf("FilterFile = %q, want %q", cfg.Proxy.FilterFile, defaults.Proxy.FilterFile)
 	}
 	if cfg.VMDefaults.VCPUs != defaults.VMDefaults.VCPUs {
 		t.Errorf("VCPUs = %d, want %d", cfg.VMDefaults.VCPUs, defaults.VMDefaults.VCPUs)
@@ -348,8 +371,15 @@ func TestValidatePaths_DirNotExist(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent dirs")
 	}
-	if !strings.Contains(err.Error(), "does not exist") {
-		t.Errorf("error = %q, want mention of 'does not exist'", err.Error())
+	msg := err.Error()
+	if !strings.Contains(msg, "does not exist") {
+		t.Errorf("error = %q, want mention of 'does not exist'", msg)
+	}
+	if !strings.Contains(msg, "images_dir") {
+		t.Errorf("error = %q, want mention of field name 'images_dir'", msg)
+	}
+	if !strings.Contains(msg, "cloudinit_dir") {
+		t.Errorf("error = %q, want mention of field name 'cloudinit_dir'", msg)
 	}
 }
 
@@ -386,8 +416,12 @@ func TestValidatePaths_NotADir(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for file instead of dir")
 	}
-	if !strings.Contains(err.Error(), "is not a directory") {
-		t.Errorf("error = %q, want mention of 'is not a directory'", err.Error())
+	msg := err.Error()
+	if !strings.Contains(msg, "is not a directory") {
+		t.Errorf("error = %q, want mention of 'is not a directory'", msg)
+	}
+	if !strings.Contains(msg, "images_dir") {
+		t.Errorf("error = %q, want mention of field name 'images_dir'", msg)
 	}
 }
 
