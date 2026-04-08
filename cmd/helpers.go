@@ -10,9 +10,20 @@ import (
 
 	"github.com/antoniocascais/motoko/pkg/cloudinit"
 	"github.com/antoniocascais/motoko/pkg/config"
+	"github.com/antoniocascais/motoko/pkg/preflight"
 	"github.com/antoniocascais/motoko/pkg/state"
 	"github.com/antoniocascais/motoko/pkg/vm"
 )
+
+func printResults(results []preflight.CheckResult, failLabel string) {
+	for _, r := range results {
+		if r.Passed {
+			fmt.Fprintf(os.Stderr, "  [OK]   %s\n", r.Name)
+		} else {
+			fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", failLabel, r.Name, r.Detail)
+		}
+	}
+}
 
 // If --config was set, uses its parent directory; otherwise uses the default.
 func configDir() string {

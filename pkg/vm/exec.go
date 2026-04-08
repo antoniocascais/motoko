@@ -7,6 +7,14 @@ import (
 	"strings"
 )
 
+const libvirtURI = "qemu:///system"
+
+// libvirtArgs prepends --connect qemu:///system so all virsh/virt-install/virt-customize
+// calls target the system daemon (where networks and VMs live).
+func libvirtArgs(args ...string) []string {
+	return append([]string{"--connect", libvirtURI}, args...)
+}
+
 // runFunc is the signature for command execution. Tests replace runCmd to intercept calls.
 type runFunc func(name string, args ...string) (stdout, stderr string, err error)
 

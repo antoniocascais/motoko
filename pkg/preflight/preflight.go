@@ -81,7 +81,7 @@ func checkLibvirtGroup() CheckResult {
 }
 
 func checkDefaultNetwork() CheckResult {
-	out, err := runCmd("virsh", "net-info", "default")
+	out, err := runCmd("virsh", "--connect", "qemu:///system", "net-info", "default")
 	if err != nil {
 		return CheckResult{Name: "libvirt default network", Passed: false, Detail: "virsh net-info default failed"}
 	}
@@ -115,6 +115,21 @@ func RunAll() ([]CheckResult, bool) {
 	add(checkDefaultNetwork())
 
 	return results, allPassed
+}
+
+// CheckConfigPaths validates that images_dir and cloudinit_dir exist and are writable.
+func CheckConfigPaths(imagesDir, cloudinitDir string) []CheckResult {
+	return []CheckResult{
+		checkDirResult(imagesDir, "images_dir"),
+		checkDirResult(cloudinitDir, "cloudinit_dir"),
+	}
+}
+
+func checkDirResult(path, fieldName string) CheckResult {
+	if err := config.CheckDirWritable(path, fieldName); err != nil {
+		return CheckResult{Name: fieldName, Passed: false, Detail: err.Error()}
+	}
+	return CheckResult{Name: fieldName, Passed: true}
 }
 
 func EnsureConfigDir(configDir string) error {

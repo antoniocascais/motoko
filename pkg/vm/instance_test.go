@@ -115,8 +115,9 @@ func TestDefine_NamePrefix(t *testing.T) {
 	}
 
 	args := (*recs)[0].args
-	if len(args) < 2 || args[0] != "--name" || args[1] != libvirtName("myvm") {
-		t.Errorf("first args = %v, want [--name %s ...]", args[:2], libvirtName("myvm"))
+	// args[0:2] are --connect qemu:///system, actual virt-install args start at [2]
+	if len(args) < 4 || args[2] != "--name" || args[3] != libvirtName("myvm") {
+		t.Errorf("first virt-install args = %v, want [--name %s ...]", args[2:4], libvirtName("myvm"))
 	}
 }
 
@@ -144,22 +145,22 @@ func TestApplyTuning_AllFourCalls(t *testing.T) {
 	}
 
 	// 1: blkiotune
-	if (*recs)[0].name != "virsh" || (*recs)[0].args[0] != "blkiotune" {
+	if (*recs)[0].name != "virsh" || (*recs)[0].args[2] != "blkiotune" {
 		t.Errorf("call 1: got %s %v, want virsh blkiotune", (*recs)[0].name, (*recs)[0].args)
 	}
 
 	// 2: domiflist
-	if (*recs)[1].args[0] != "domiflist" {
+	if (*recs)[1].args[2] != "domiflist" {
 		t.Errorf("call 2: got %v, want domiflist", (*recs)[1].args)
 	}
 
 	// 3: domiftune
-	if (*recs)[2].args[0] != "domiftune" {
+	if (*recs)[2].args[2] != "domiftune" {
 		t.Errorf("call 3: got %v, want domiftune", (*recs)[2].args)
 	}
 
 	// 4: memtune
-	if (*recs)[3].args[0] != "memtune" {
+	if (*recs)[3].args[2] != "memtune" {
 		t.Errorf("call 4: got %v, want memtune", (*recs)[3].args)
 	}
 }
@@ -172,7 +173,7 @@ func TestApplyTuning_BlkioWeightArgs(t *testing.T) {
 	_ = ApplyTuning("test", 200, 5000, 4096)
 
 	args := strings.Join((*recs)[0].args, " ")
-	want := "blkiotune motoko-test --weight 200 --config"
+	want := "--connect qemu:///system blkiotune motoko-test --weight 200 --config"
 	if args != want {
 		t.Errorf("blkiotune args = %q, want %q", args, want)
 	}
@@ -189,7 +190,7 @@ func TestApplyTuning_MemtuneConversion(t *testing.T) {
 	last := (*recs)[len(*recs)-1]
 	args := strings.Join(last.args, " ")
 	// 4096 MB * 1024 = 4194304 KiB
-	want := "memtune motoko-test --hard-limit 4194304 --config"
+	want := "--connect qemu:///system memtune motoko-test --hard-limit 4194304 --config"
 	if args != want {
 		t.Errorf("memtune args = %q, want %q", args, want)
 	}
@@ -307,34 +308,6 @@ func TestState_ReturnsCleanString(t *testing.T) {
 	}
 }
 
-func TestIsDefined_True(t *testing.T) {
-	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
-		return "running", "", nil
-	})
-
-	defined, err := IsDefined("test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !defined {
-		t.Error("IsDefined() = false, want true")
-	}
-}
-
-func TestIsDefined_False(t *testing.T) {
-	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
-		return "", "", fmt.Errorf("domain not found")
-	})
-
-	defined, err := IsDefined("test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if defined {
-		t.Error("IsDefined() = true, want false")
-	}
-}
-
 func TestListAll_FiltersByPrefix(t *testing.T) {
 	callCount := 0
 	mockRunnerWithFunc(t, func(name string, args ...string) (string, string, error) {
@@ -387,6 +360,66 @@ func TestListAll_FiltersByPrefix(t *testing.T) {
 }
 
 
+func TestLibvirtCommands_IncludeConnectFlag(t *testing.T) {
+	// Invariant: every virsh/virt-install/virt-customize call must pass
+	// --connect qemu:///system to target the system daemon.
+	libvirtBins := map[string]bool{"virsh": true, "virt-install": true, "virt-customize": true}
+
+	domiflistOutput := " Interface  Type       Source     Model       MAC\n" +
+		"-------------------------------------------------------\n" +
+		" vnet0      network    default    virtio      52:54:00:ab:cd:ef\n"
+
+	tests := []struct {
+		name         string
+		fn           func()
+		wantMinCalls int // minimum libvirt calls expected
+	}{
+		{"Start", func() { _ = Start("test") }, 1},
+		{"Stop", func() { _ = Stop("test") }, 1},
+		{"ForceStop", func() { _ = ForceStop("test") }, 1},
+		{"Undefine", func() { _ = Undefine("test") }, 1},
+		{"State", func() { _, _ = State("test") }, 1},
+		{"GetIP", func() { _, _ = GetIP("test") }, 1},
+		{"DisableAutostart", func() { _ = DisableAutostart("test") }, 1},
+		{"ListAll", func() { _, _ = ListAll() }, 1},
+		{"Define", func() {
+			_ = Define(DefineConfig{
+				Name: "test", VCPUs: 2, RAMMB: 2048,
+				OverlayPath: "/o.qcow2", DataPath: "/d.qcow2",
+				CloudInitISO: "/ci.iso", Network: "default",
+			})
+		}, 1},
+		{"ApplyTuning", func() { _ = ApplyTuning("test", 200, 5000, 4096) }, 4},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recs := mockRunnerWithFunc(t, func(name string, args ...string) (string, string, error) {
+				// ApplyTuning needs domiflist output to reach domiftune
+				if name == "virsh" && len(args) >= 3 && args[2] == "domiflist" {
+					return domiflistOutput, "", nil
+				}
+				return "", "", nil
+			})
+			tt.fn()
+
+			libvirtCalls := 0
+			for _, rec := range *recs {
+				if !libvirtBins[rec.name] {
+					continue
+				}
+				libvirtCalls++
+				if len(rec.args) < 2 || rec.args[0] != "--connect" || rec.args[1] != libvirtURI {
+					t.Errorf("%s %v: missing --connect %s as first args", rec.name, rec.args, libvirtURI)
+				}
+			}
+			if libvirtCalls < tt.wantMinCalls {
+				t.Errorf("expected at least %d libvirt calls, got %d", tt.wantMinCalls, libvirtCalls)
+			}
+		})
+	}
+}
+
 func TestLifecycleActions_Args(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -405,8 +438,8 @@ func TestLifecycleActions_Args(t *testing.T) {
 			recs := mockRunner(t)
 			_ = tt.fn("myvm")
 			args := (*recs)[0].args
-			if args[0] != tt.wantCmd {
-				t.Errorf("virsh subcommand = %q, want %q", args[0], tt.wantCmd)
+			if args[2] != tt.wantCmd {
+				t.Errorf("virsh subcommand = %q, want %q", args[2], tt.wantCmd)
 			}
 			// VM name should be the last arg
 			last := args[len(args)-1]

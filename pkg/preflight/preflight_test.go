@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -176,8 +177,94 @@ func TestCheckDefaultNetwork_VerifiesCommand(t *testing.T) {
 	if capturedName != "virsh" {
 		t.Errorf("command = %q, want virsh", capturedName)
 	}
-	if len(capturedArgs) != 2 || capturedArgs[0] != "net-info" || capturedArgs[1] != "default" {
-		t.Errorf("args = %v, want [net-info default]", capturedArgs)
+	if len(capturedArgs) != 4 || capturedArgs[0] != "--connect" || capturedArgs[1] != "qemu:///system" || capturedArgs[2] != "net-info" || capturedArgs[3] != "default" {
+		t.Errorf("args = %v, want [--connect qemu:///system net-info default]", capturedArgs)
+	}
+}
+
+func TestCheckConfigPaths_BothExistAndWritable(t *testing.T) {
+	dir := t.TempDir()
+	imagesDir := filepath.Join(dir, "images")
+	cloudinitDir := filepath.Join(dir, "cloudinit")
+	os.MkdirAll(imagesDir, 0755)
+	os.MkdirAll(cloudinitDir, 0755)
+
+	results := CheckConfigPaths(imagesDir, cloudinitDir)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// Verify result order and names match the args
+	if results[0].Name != "images_dir" {
+		t.Errorf("results[0].Name = %q, want images_dir", results[0].Name)
+	}
+	if results[1].Name != "cloudinit_dir" {
+		t.Errorf("results[1].Name = %q, want cloudinit_dir", results[1].Name)
+	}
+	for _, r := range results {
+		if !r.Passed {
+			t.Errorf("%s should pass, got: %s", r.Name, r.Detail)
+		}
+	}
+}
+
+func TestCheckConfigPaths_DirNotExist(t *testing.T) {
+	results := CheckConfigPaths("/nonexistent/images", "/nonexistent/cloudinit")
+	for _, r := range results {
+		if r.Passed {
+			t.Errorf("%s should fail for nonexistent dir", r.Name)
+		}
+		if !strings.Contains(r.Detail, "does not exist") {
+			t.Errorf("%s detail = %q, want mention of 'does not exist'", r.Name, r.Detail)
+		}
+	}
+}
+
+func TestCheckConfigPaths_NotWritable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("write permission test unreliable as root")
+	}
+	dir := t.TempDir()
+	roDir := filepath.Join(dir, "readonly")
+	os.MkdirAll(roDir, 0555)
+
+	results := CheckConfigPaths(roDir, roDir)
+	for _, r := range results {
+		if r.Passed {
+			t.Errorf("%s should fail for non-writable dir", r.Name)
+		}
+		if !strings.Contains(r.Detail, "not writable") {
+			t.Errorf("%s detail = %q, want mention of 'not writable'", r.Name, r.Detail)
+		}
+	}
+}
+
+func TestCheckConfigPaths_MixedState(t *testing.T) {
+	dir := t.TempDir()
+	goodDir := filepath.Join(dir, "good")
+	os.MkdirAll(goodDir, 0755)
+
+	results := CheckConfigPaths(goodDir, "/nonexistent/cloudinit")
+	if !results[0].Passed {
+		t.Errorf("images_dir should pass when dir exists and is writable")
+	}
+	if results[1].Passed {
+		t.Errorf("cloudinit_dir should fail when dir doesn't exist")
+	}
+}
+
+func TestCheckConfigPaths_NotADir(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "not-a-dir")
+	os.WriteFile(filePath, []byte("file"), 0644)
+
+	results := CheckConfigPaths(filePath, filePath)
+	for _, r := range results {
+		if r.Passed {
+			t.Errorf("%s should fail when path is a file, not a directory", r.Name)
+		}
+		if !strings.Contains(r.Detail, "not a directory") {
+			t.Errorf("%s detail = %q, want mention of 'not a directory'", r.Name, r.Detail)
+		}
 	}
 }
 

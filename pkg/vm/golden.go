@@ -93,7 +93,7 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 		"--run-command", "npm install -g @anthropic-ai/claude-code",
 		"--run-command", fmt.Sprintf("useradd -m -s /bin/bash %s", cfg.VMUser),
 	}
-	if _, _, err := runCmd("virt-customize", args...); err != nil {
+	if _, _, err := runCmd("virt-customize", libvirtArgs(args...)...); err != nil {
 		return fmt.Errorf("customizing image: %w", err)
 	}
 

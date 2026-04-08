@@ -57,8 +57,8 @@ type VMDefaults struct {
 
 func DefaultConfig() *Config {
 	return &Config{
-		ImagesDir:    "/var/lib/libvirt/images",
-		CloudinitDir: "/var/lib/libvirt/cloud-init",
+		ImagesDir:    "/var/lib/libvirt/images/motoko",
+		CloudinitDir: "/var/lib/libvirt/cloud-init/motoko",
 		VMUser:       "claude",
 		BaseImage: BaseImage{
 			URL:      "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2",

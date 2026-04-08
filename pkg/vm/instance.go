@@ -59,7 +59,7 @@ func Define(cfg DefineConfig) error {
 		"--noreboot",
 	}
 
-	_, _, err := runCmd("virt-install", args...)
+	_, _, err := runCmd("virt-install", libvirtArgs(args...)...)
 	return err
 }
 
@@ -68,24 +68,24 @@ func Define(cfg DefineConfig) error {
 func ApplyTuning(name string, blkioWeight, netBandwidthKB, ramMB int) error {
 	vmName := libvirtName(name)
 
-	if _, _, err := runCmd("virsh", "blkiotune", vmName, "--weight", fmt.Sprintf("%d", blkioWeight), "--config"); err != nil {
+	if _, _, err := runCmd("virsh", libvirtArgs("blkiotune", vmName, "--weight", fmt.Sprintf("%d", blkioWeight), "--config")...); err != nil {
 		return fmt.Errorf("blkiotune: %w", err)
 	}
 
 	// Network bandwidth: need MAC from domiflist first
-	stdout, _, err := runCmd("virsh", "domiflist", vmName)
+	stdout, _, err := runCmd("virsh", libvirtArgs("domiflist", vmName)...)
 	if err != nil {
 		return fmt.Errorf("domiflist: %w", err)
 	}
 	if mac := parseMACFromDomiflist(stdout); mac != "" {
-		if _, _, err := runCmd("virsh", "domiftune", vmName, mac, "--outbound", fmt.Sprintf("%d", netBandwidthKB), "--config"); err != nil {
+		if _, _, err := runCmd("virsh", libvirtArgs("domiftune", vmName, mac, "--outbound", fmt.Sprintf("%d", netBandwidthKB), "--config")...); err != nil {
 			return fmt.Errorf("domiftune: %w", err)
 		}
 	}
 
 	// Memory hard limit (virsh memtune takes KiB)
 	ramKiB := ramMB * 1024
-	if _, _, err := runCmd("virsh", "memtune", vmName, "--hard-limit", fmt.Sprintf("%d", ramKiB), "--config"); err != nil {
+	if _, _, err := runCmd("virsh", libvirtArgs("memtune", vmName, "--hard-limit", fmt.Sprintf("%d", ramKiB), "--config")...); err != nil {
 		return fmt.Errorf("memtune: %w", err)
 	}
 
@@ -94,37 +94,37 @@ func ApplyTuning(name string, blkioWeight, netBandwidthKB, ramMB int) error {
 
 // Start boots a defined VM.
 func Start(name string) error {
-	_, _, err := runCmd("virsh", "start", libvirtName(name))
+	_, _, err := runCmd("virsh", libvirtArgs("start", libvirtName(name))...)
 	return err
 }
 
 // Stop sends an ACPI shutdown to the VM (graceful).
 func Stop(name string) error {
-	_, _, err := runCmd("virsh", "shutdown", libvirtName(name))
+	_, _, err := runCmd("virsh", libvirtArgs("shutdown", libvirtName(name))...)
 	return err
 }
 
 // ForceStop immediately terminates the VM (hard kill).
 func ForceStop(name string) error {
-	_, _, err := runCmd("virsh", "destroy", libvirtName(name))
+	_, _, err := runCmd("virsh", libvirtArgs("destroy", libvirtName(name))...)
 	return err
 }
 
 // Undefine removes the VM domain definition.
 func Undefine(name string) error {
-	_, _, err := runCmd("virsh", "undefine", libvirtName(name))
+	_, _, err := runCmd("virsh", libvirtArgs("undefine", libvirtName(name))...)
 	return err
 }
 
 // State returns the VM's current state (e.g. "running", "shut off").
 func State(name string) (string, error) {
-	stdout, _, err := runCmd("virsh", "domstate", libvirtName(name))
+	stdout, _, err := runCmd("virsh", libvirtArgs("domstate", libvirtName(name))...)
 	return stdout, err
 }
 
 // GetIP returns the VM's IPv4 address, or empty string if unavailable.
 func GetIP(name string) (string, error) {
-	stdout, _, err := runCmd("virsh", "domifaddr", libvirtName(name))
+	stdout, _, err := runCmd("virsh", libvirtArgs("domifaddr", libvirtName(name))...)
 	if err != nil {
 		return "", err
 	}
@@ -156,18 +156,9 @@ func WaitForSSH(ip, keyPath, user string, timeout time.Duration) error {
 	return fmt.Errorf("SSH not ready after %s: %w", timeout, lastErr)
 }
 
-// IsDefined checks whether the VM domain exists in libvirt.
-func IsDefined(name string) (bool, error) {
-	_, _, err := runCmd("virsh", "domstate", libvirtName(name))
-	if err != nil {
-		return false, nil
-	}
-	return true, nil
-}
-
 // ListAll returns all motoko-prefixed VMs with their state.
 func ListAll() ([]VMInfo, error) {
-	stdout, _, err := runCmd("virsh", "list", "--all", "--name")
+	stdout, _, err := runCmd("virsh", libvirtArgs("list", "--all", "--name")...)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +185,7 @@ func ListAll() ([]VMInfo, error) {
 
 // DisableAutostart prevents the VM from starting on host boot.
 func DisableAutostart(name string) error {
-	_, _, err := runCmd("virsh", "autostart", "--disable", libvirtName(name))
+	_, _, err := runCmd("virsh", libvirtArgs("autostart", "--disable", libvirtName(name))...)
 	return err
 }
 
