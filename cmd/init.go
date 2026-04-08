@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/antoniocascais/motoko/pkg/config"
 	"github.com/antoniocascais/motoko/pkg/preflight"
 	"github.com/spf13/cobra"
 )
@@ -15,14 +16,7 @@ var initCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		results, allPassed := preflight.RunAll()
-
-		for _, r := range results {
-			if r.Passed {
-				fmt.Fprintf(os.Stderr, "  [OK]   %s\n", r.Name)
-			} else {
-				fmt.Fprintf(os.Stderr, "  [FAIL] %s: %s\n", r.Name, r.Detail)
-			}
-		}
+		printResults(results, "FAIL")
 
 		if !allPassed {
 			return fmt.Errorf("preflight checks failed — fix the issues above and re-run")
@@ -39,6 +33,14 @@ var initCmd = &cobra.Command{
 		}
 
 		fmt.Fprintf(os.Stderr, "\nConfig: %s\n", cfgPath)
+
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  [SKIP] config path checks: %v\n", err)
+		} else {
+			printResults(preflight.CheckConfigPaths(cfg.ImagesDir, cfg.CloudinitDir, cfg.Proxy.FilterFile), "WARN")
+		}
+
 		return nil
 	},
 }

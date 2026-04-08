@@ -81,7 +81,7 @@ func checkLibvirtGroup() CheckResult {
 }
 
 func checkDefaultNetwork() CheckResult {
-	out, err := runCmd("virsh", "net-info", "default")
+	out, err := runCmd("virsh", "--connect", "qemu:///system", "net-info", "default")
 	if err != nil {
 		return CheckResult{Name: "libvirt default network", Passed: false, Detail: "virsh net-info default failed"}
 	}
@@ -115,6 +115,48 @@ func RunAll() ([]CheckResult, bool) {
 	add(checkDefaultNetwork())
 
 	return results, allPassed
+}
+
+// CheckConfigPaths validates that images_dir and cloudinit_dir exist and are writable,
+// and that the proxy filter file exists and is writable.
+func CheckConfigPaths(imagesDir, cloudinitDir, filterFile string) []CheckResult {
+	return []CheckResult{
+		checkDirResult(imagesDir, "images_dir"),
+		checkDirResult(cloudinitDir, "cloudinit_dir"),
+		checkFilterFileResult(filterFile),
+	}
+}
+
+func checkFilterFileResult(path string) CheckResult {
+	name := "proxy.filter_file"
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return CheckResult{Name: name, Passed: false, Detail: fmt.Sprintf("does not exist: %s", path)}
+		}
+		return CheckResult{Name: name, Passed: false, Detail: err.Error()}
+	}
+	if info.IsDir() {
+		return CheckResult{Name: name, Passed: false, Detail: fmt.Sprintf("is a directory, not a file: %s", path)}
+	}
+	// Check writable by opening for append (doesn't modify content)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return CheckResult{
+			Name:   name,
+			Passed: false,
+			Detail: fmt.Sprintf("not writable: %s (check group ownership and permissions)", path),
+		}
+	}
+	_ = f.Close()
+	return CheckResult{Name: name, Passed: true}
+}
+
+func checkDirResult(path, fieldName string) CheckResult {
+	if err := config.CheckDirWritable(path, fieldName); err != nil {
+		return CheckResult{Name: fieldName, Passed: false, Detail: err.Error()}
+	}
+	return CheckResult{Name: fieldName, Passed: true}
 }
 
 func EnsureConfigDir(configDir string) error {

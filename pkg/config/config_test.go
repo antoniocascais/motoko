@@ -24,6 +24,16 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_UsesMotokSubdirs(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.ImagesDir != "/var/lib/libvirt/images/motoko" {
+		t.Errorf("ImagesDir = %q, want /var/lib/libvirt/images/motoko", cfg.ImagesDir)
+	}
+	if cfg.CloudinitDir != "/var/lib/libvirt/cloud-init/motoko" {
+		t.Errorf("CloudinitDir = %q, want /var/lib/libvirt/cloud-init/motoko", cfg.CloudinitDir)
+	}
+}
+
 func TestConfigDir(t *testing.T) {
 	dir := ConfigDir()
 	if dir == "" {

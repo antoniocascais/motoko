@@ -1,12 +1,13 @@
 package vm
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -255,18 +256,14 @@ func TestFetchDebianChecksum_HTTPMock(t *testing.T) {
 		"deadbeef1234  debian-12-generic-amd64.qcow2\n" +
 		"ffffff999999  another-file.img\n"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/images/SHA512SUMS" {
-			http.NotFound(w, r)
-			return
+	mockHTTPClient(t, func(req *http.Request) *http.Response {
+		if req.URL.Path != "/images/SHA512SUMS" {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}
 		}
-		_, _ = fmt.Fprint(w, sha512sums)
-	}))
-	defer srv.Close()
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(sha512sums))}
+	})
 
-	baseURL := srv.URL + "/images/debian-12-generic-amd64.qcow2"
-
-	checksum, err := FetchDebianChecksum(baseURL, "debian-12-generic-amd64.qcow2")
+	checksum, err := FetchDebianChecksum("http://example.com/images/debian-12-generic-amd64.qcow2", "debian-12-generic-amd64.qcow2")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -280,12 +277,11 @@ func TestFetchDebianChecksum_HTTPMock(t *testing.T) {
 func TestFetchDebianChecksum_FileNotFound(t *testing.T) {
 	sha512sums := "abc123def456  other-file.qcow2\n"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, sha512sums)
-	}))
-	defer srv.Close()
+	mockHTTPClient(t, func(req *http.Request) *http.Response {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(sha512sums))}
+	})
 
-	_, err := FetchDebianChecksum(srv.URL+"/images/missing.qcow2", "missing.qcow2")
+	_, err := FetchDebianChecksum("http://example.com/images/missing.qcow2", "missing.qcow2")
 	if err == nil {
 		t.Fatal("expected error for missing filename")
 	}
@@ -296,13 +292,12 @@ func TestFetchDebianChecksum_FileNotFound(t *testing.T) {
 
 func TestFetchDebianChecksum_URLConstruction(t *testing.T) {
 	var requestedPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedPath = r.URL.Path
-		_, _ = fmt.Fprint(w, "aaa111  file.qcow2\n")
-	}))
-	defer srv.Close()
+	mockHTTPClient(t, func(req *http.Request) *http.Response {
+		requestedPath = req.URL.Path
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("aaa111  file.qcow2\n"))}
+	})
 
-	_, _ = FetchDebianChecksum(srv.URL+"/cloud/bookworm/latest/file.qcow2", "file.qcow2")
+	_, _ = FetchDebianChecksum("http://example.com/cloud/bookworm/latest/file.qcow2", "file.qcow2")
 
 	if requestedPath != "/cloud/bookworm/latest/SHA512SUMS" {
 		t.Errorf("requested path = %q, want %q", requestedPath, "/cloud/bookworm/latest/SHA512SUMS")
@@ -395,12 +390,11 @@ func TestVerifyChecksum_FileNotFound(t *testing.T) {
 }
 
 func TestFetchDebianChecksum_HTTPError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
+	mockHTTPClient(t, func(req *http.Request) *http.Response {
+		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader(""))}
+	})
 
-	_, err := FetchDebianChecksum(srv.URL+"/images/file.qcow2", "file.qcow2")
+	_, err := FetchDebianChecksum("http://example.com/images/file.qcow2", "file.qcow2")
 	if err == nil {
 		t.Fatal("expected error for HTTP 500")
 	}
@@ -481,3 +475,136 @@ func TestBuildGoldenImage_GuestfishFailure(t *testing.T) {
 		t.Errorf("temp file not cleaned up after guestfish failure: %v", entries)
 	}
 }
+
+// --- downloadBaseImage tests ---
+
+func TestDownloadBaseImage_AlreadyExistsValidChecksum(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("existing image data")
+	destPath := filepath.Join(dir, "base.qcow2")
+	if err := os.WriteFile(destPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := sha512.Sum512(content)
+	checksum := "sha512:" + hex.EncodeToString(h[:])
+
+	httpCalled := false
+	mockHTTPClient(t, func(req *http.Request) *http.Response {
+		httpCalled = true
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}
+	})
+
+	if err := downloadBaseImage("http://example.com/base.qcow2", destPath, checksum); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if httpCalled {
+		t.Error("HTTP request made when file already exists with valid checksum")
+	}
+}
+
+func TestDownloadBaseImage_AlreadyExistsBadChecksum(t *testing.T) {
+	dir := t.TempDir()
+	destPath := filepath.Join(dir, "base.qcow2")
+	if err := os.WriteFile(destPath, []byte("image data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := downloadBaseImage("http://example.com/base.qcow2", destPath, "sha512:0000000000000000000000000000000000000000000000000000000000000000")
+	if err == nil {
+		t.Fatal("expected checksum mismatch error")
+	}
+	if !strings.Contains(err.Error(), "mismatch") {
+		t.Errorf("error = %q, want mention of 'mismatch'", err.Error())
+	}
+}
+
+func TestDownloadBaseImage_FreshDownload(t *testing.T) {
+	dir := t.TempDir()
+	destPath := filepath.Join(dir, "base.qcow2")
+	content := []byte("downloaded image content")
+
+	h := sha512.Sum512(content)
+	checksum := "sha512:" + hex.EncodeToString(h[:])
+
+	mockHTTPClient(t, func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(content)),
+		}
+	})
+
+	if err := downloadBaseImage("http://example.com/base.qcow2", destPath, checksum); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify file landed at destPath with correct content
+	got, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("reading downloaded file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Error("downloaded file content does not match")
+	}
+
+	// No temp files should remain (atomic rename)
+	entries, _ := filepath.Glob(filepath.Join(dir, ".download-*"))
+	if len(entries) > 0 {
+		t.Errorf("temp file not cleaned up after successful download: %v", entries)
+	}
+}
+
+func TestDownloadBaseImage_HTTPError(t *testing.T) {
+	dir := t.TempDir()
+	destPath := filepath.Join(dir, "base.qcow2")
+
+	mockHTTPClient(t, func(req *http.Request) *http.Response {
+		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader("error"))}
+	})
+
+	err := downloadBaseImage("http://example.com/base.qcow2", destPath, "sha512:abc")
+	if err == nil {
+		t.Fatal("expected error for HTTP 500")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error = %q, want mention of HTTP status", err.Error())
+	}
+
+	// No file should exist at destPath
+	if _, err := os.Stat(destPath); !os.IsNotExist(err) {
+		t.Error("file should not exist after HTTP error")
+	}
+}
+
+func TestDownloadBaseImage_ChecksumMismatchCleansUp(t *testing.T) {
+	dir := t.TempDir()
+	destPath := filepath.Join(dir, "base.qcow2")
+	content := []byte("image with wrong checksum")
+
+	mockHTTPClient(t, func(req *http.Request) *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(content)),
+		}
+	})
+
+	err := downloadBaseImage("http://example.com/base.qcow2", destPath, "sha512:0000000000000000000000000000000000000000000000000000000000000000")
+	if err == nil {
+		t.Fatal("expected checksum mismatch error")
+	}
+	if !strings.Contains(err.Error(), "mismatch") {
+		t.Errorf("error = %q, want mention of 'mismatch'", err.Error())
+	}
+
+	// Temp file should be cleaned up
+	entries, _ := filepath.Glob(filepath.Join(dir, ".download-*"))
+	if len(entries) > 0 {
+		t.Errorf("temp file not cleaned up: %v", entries)
+	}
+
+	// No file at destPath
+	if _, err := os.Stat(destPath); !os.IsNotExist(err) {
+		t.Error("file should not exist after checksum mismatch")
+	}
+}
+

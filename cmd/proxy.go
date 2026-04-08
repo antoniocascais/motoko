@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -101,44 +100,13 @@ func removeDomainFromFilter(filterFile, pattern string) error {
 	return writeFilterFile(filterFile, kept)
 }
 
-// writeFilterFile writes lines atomically via temp file + rename.
-// Preserves the original file's permissions so tinyproxy can still read it.
+// writeFilterFile overwrites the filter file in place.
+// Existing file permissions are preserved (os.WriteFile only applies perm on create).
 func writeFilterFile(filterFile string, lines []string) error {
 	content := strings.Join(lines, "\n") + "\n"
-
-	// Capture original permissions before replacing
-	var perm os.FileMode = 0644
-	if info, err := os.Stat(filterFile); err == nil {
-		perm = info.Mode().Perm()
+	if err := os.WriteFile(filterFile, []byte(content), 0644); err != nil {
+		return fmt.Errorf("writing filter file: %w", err)
 	}
-
-	dir := filepath.Dir(filterFile)
-	tmp, err := os.CreateTemp(dir, ".motoko-filter-*")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w (check write permissions on %s)", err, dir)
-	}
-	tmpPath := tmp.Name()
-
-	if _, err := tmp.WriteString(content); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("writing temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-
-	if err := os.Chmod(tmpPath, perm); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("setting file permissions: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, filterFile); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replacing filter file: %w", err)
-	}
-
 	return nil
 }
 

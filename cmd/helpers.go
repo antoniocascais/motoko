@@ -10,9 +10,20 @@ import (
 
 	"github.com/antoniocascais/motoko/pkg/cloudinit"
 	"github.com/antoniocascais/motoko/pkg/config"
+	"github.com/antoniocascais/motoko/pkg/preflight"
 	"github.com/antoniocascais/motoko/pkg/state"
 	"github.com/antoniocascais/motoko/pkg/vm"
 )
+
+func printResults(results []preflight.CheckResult, failLabel string) {
+	for _, r := range results {
+		if r.Passed {
+			fmt.Fprintf(os.Stderr, "  [OK]   %s\n", r.Name)
+		} else {
+			fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", failLabel, r.Name, r.Detail)
+		}
+	}
+}
 
 // If --config was set, uses its parent directory; otherwise uses the default.
 func configDir() string {
@@ -74,6 +85,50 @@ func sshArgs(keyPath, user, ip string) []string {
 		"-i", keyPath,
 		fmt.Sprintf("%s@%s", user, ip),
 	}
+}
+
+// warnRemove removes a file and warns on stderr if removal fails for a reason
+// other than the file not existing.
+func warnRemove(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: removing %s: %v\n", path, err)
+	}
+}
+
+// loadOperatorKeyAndPersona reads an optional operator SSH key and persona file.
+func loadOperatorKeyAndPersona(keyPath, personaPath string) (operatorKey, persona string, err error) {
+	if keyPath != "" {
+		data, err := os.ReadFile(keyPath)
+		if err != nil {
+			return "", "", fmt.Errorf("reading operator SSH key %s: %w", keyPath, err)
+		}
+		operatorKey = strings.TrimSpace(string(data))
+	}
+	if personaPath != "" {
+		data, err := os.ReadFile(personaPath)
+		if err != nil {
+			return "", "", fmt.Errorf("reading persona %s: %w", personaPath, err)
+		}
+		persona = string(data)
+	}
+	return operatorKey, persona, nil
+}
+
+// renderAndBuildISO renders cloud-init templates and produces the NoCloud ISO.
+func renderAndBuildISO(cfg *config.Config, name, token string, sshKeys []string, persona, isoPath string) error {
+	params, err := cloudinit.NewInstanceParams(cfg, name, name, token, sshKeys, persona)
+	if err != nil {
+		return fmt.Errorf("cloud-init params: %w", err)
+	}
+	userdata, err := cloudinit.RenderUserData(params)
+	if err != nil {
+		return err
+	}
+	metadata, err := cloudinit.RenderMetaData(name, name)
+	if err != nil {
+		return err
+	}
+	return cloudinit.BuildISO(userdata, metadata, isoPath)
 }
 
 func requireEnv(name string) (string, error) {

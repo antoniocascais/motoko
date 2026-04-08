@@ -99,10 +99,10 @@ func (c *Config) Validate() error {
 func (c *Config) ValidatePaths() error {
 	var errs ValidationErrors
 
-	if err := checkDirWritable(c.ImagesDir, "images_dir"); err != nil {
+	if err := CheckDirWritable(c.ImagesDir, "images_dir"); err != nil {
 		errs = append(errs, err)
 	}
-	if err := checkDirWritable(c.CloudinitDir, "cloudinit_dir"); err != nil {
+	if err := CheckDirWritable(c.CloudinitDir, "cloudinit_dir"); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -112,7 +112,7 @@ func (c *Config) ValidatePaths() error {
 	return nil
 }
 
-func checkDirWritable(path, fieldName string) error {
+func CheckDirWritable(path, fieldName string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -144,6 +144,11 @@ func BuildISO(userdata, metadata []byte, outPath string) error {
 		return fmt.Errorf("writing meta-data: %w", err)
 	}
 
+	// Remove existing ISO so cloud-localds cp doesn't fail on 0600 files (rebuild path)
+	if err := os.Remove(outPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing existing ISO: %w", err)
+	}
+
 	cmd := exec.Command(binary, outPath, userdataPath, metadataPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
