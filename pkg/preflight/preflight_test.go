@@ -182,23 +182,39 @@ func TestCheckDefaultNetwork_VerifiesCommand(t *testing.T) {
 	}
 }
 
-func TestCheckConfigPaths_BothExistAndWritable(t *testing.T) {
+func writableFilter(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "allowed-domains")
+	if err := os.WriteFile(path, []byte(""), 0664); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCheckConfigPaths_AllValid(t *testing.T) {
 	dir := t.TempDir()
 	imagesDir := filepath.Join(dir, "images")
 	cloudinitDir := filepath.Join(dir, "cloudinit")
-	os.MkdirAll(imagesDir, 0755)
-	os.MkdirAll(cloudinitDir, 0755)
-
-	results := CheckConfigPaths(imagesDir, cloudinitDir)
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	if err := os.MkdirAll(imagesDir, 0755); err != nil {
+		t.Fatal(err)
 	}
-	// Verify result order and names match the args
+	if err := os.MkdirAll(cloudinitDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	filterFile := writableFilter(t)
+
+	results := CheckConfigPaths(imagesDir, cloudinitDir, filterFile)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
 	if results[0].Name != "images_dir" {
 		t.Errorf("results[0].Name = %q, want images_dir", results[0].Name)
 	}
 	if results[1].Name != "cloudinit_dir" {
 		t.Errorf("results[1].Name = %q, want cloudinit_dir", results[1].Name)
+	}
+	if results[2].Name != "proxy.filter_file" {
+		t.Errorf("results[2].Name = %q, want proxy.filter_file", results[2].Name)
 	}
 	for _, r := range results {
 		if !r.Passed {
@@ -208,8 +224,9 @@ func TestCheckConfigPaths_BothExistAndWritable(t *testing.T) {
 }
 
 func TestCheckConfigPaths_DirNotExist(t *testing.T) {
-	results := CheckConfigPaths("/nonexistent/images", "/nonexistent/cloudinit")
-	for _, r := range results {
+	filterFile := writableFilter(t)
+	results := CheckConfigPaths("/nonexistent/images", "/nonexistent/cloudinit", filterFile)
+	for _, r := range results[:2] {
 		if r.Passed {
 			t.Errorf("%s should fail for nonexistent dir", r.Name)
 		}
@@ -225,10 +242,13 @@ func TestCheckConfigPaths_NotWritable(t *testing.T) {
 	}
 	dir := t.TempDir()
 	roDir := filepath.Join(dir, "readonly")
-	os.MkdirAll(roDir, 0555)
+	if err := os.MkdirAll(roDir, 0555); err != nil {
+		t.Fatal(err)
+	}
+	filterFile := writableFilter(t)
 
-	results := CheckConfigPaths(roDir, roDir)
-	for _, r := range results {
+	results := CheckConfigPaths(roDir, roDir, filterFile)
+	for _, r := range results[:2] {
 		if r.Passed {
 			t.Errorf("%s should fail for non-writable dir", r.Name)
 		}
@@ -241,9 +261,12 @@ func TestCheckConfigPaths_NotWritable(t *testing.T) {
 func TestCheckConfigPaths_MixedState(t *testing.T) {
 	dir := t.TempDir()
 	goodDir := filepath.Join(dir, "good")
-	os.MkdirAll(goodDir, 0755)
+	if err := os.MkdirAll(goodDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	filterFile := writableFilter(t)
 
-	results := CheckConfigPaths(goodDir, "/nonexistent/cloudinit")
+	results := CheckConfigPaths(goodDir, "/nonexistent/cloudinit", filterFile)
 	if !results[0].Passed {
 		t.Errorf("images_dir should pass when dir exists and is writable")
 	}
@@ -255,16 +278,68 @@ func TestCheckConfigPaths_MixedState(t *testing.T) {
 func TestCheckConfigPaths_NotADir(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "not-a-dir")
-	os.WriteFile(filePath, []byte("file"), 0644)
+	if err := os.WriteFile(filePath, []byte("file"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	filterFile := writableFilter(t)
 
-	results := CheckConfigPaths(filePath, filePath)
-	for _, r := range results {
+	results := CheckConfigPaths(filePath, filePath, filterFile)
+	for _, r := range results[:2] {
 		if r.Passed {
 			t.Errorf("%s should fail when path is a file, not a directory", r.Name)
 		}
 		if !strings.Contains(r.Detail, "not a directory") {
 			t.Errorf("%s detail = %q, want mention of 'not a directory'", r.Name, r.Detail)
 		}
+	}
+}
+
+func TestCheckFilterFile_Writable(t *testing.T) {
+	path := writableFilter(t)
+	r := checkFilterFileResult(path)
+	if !r.Passed {
+		t.Errorf("should pass for writable file, got: %s", r.Detail)
+	}
+}
+
+func TestCheckFilterFile_NotExist(t *testing.T) {
+	r := checkFilterFileResult("/nonexistent/allowed-domains")
+	if r.Passed {
+		t.Error("should fail for nonexistent file")
+	}
+	if !strings.Contains(r.Detail, "does not exist") {
+		t.Errorf("detail = %q, want mention of 'does not exist'", r.Detail)
+	}
+}
+
+func TestCheckFilterFile_IsDirectory(t *testing.T) {
+	r := checkFilterFileResult(t.TempDir())
+	if r.Passed {
+		t.Error("should fail when path is a directory")
+	}
+	if !strings.Contains(r.Detail, "is a directory") {
+		t.Errorf("detail = %q, want mention of 'is a directory'", r.Detail)
+	}
+}
+
+func TestCheckFilterFile_NotWritable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("write permission test unreliable as root")
+	}
+	path := filepath.Join(t.TempDir(), "readonly-filter")
+	if err := os.WriteFile(path, []byte(""), 0444); err != nil {
+		t.Fatal(err)
+	}
+
+	r := checkFilterFileResult(path)
+	if r.Passed {
+		t.Error("should fail for read-only file")
+	}
+	if !strings.Contains(r.Detail, "not writable") {
+		t.Errorf("detail = %q, want mention of 'not writable'", r.Detail)
+	}
+	if !strings.Contains(r.Detail, "check group ownership") {
+		t.Error("detail should include permissions guidance")
 	}
 }
 

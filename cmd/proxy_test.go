@@ -159,7 +159,7 @@ func TestWriteFilterFile_EmptyLines(t *testing.T) {
 	}
 }
 
-func TestWriteFilterFile_AtomicReplace(t *testing.T) {
+func TestWriteFilterFile_OverwritesExisting(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "filter")
 	if err := os.WriteFile(path, []byte("original\n"), 0664); err != nil {
@@ -177,12 +177,35 @@ func TestWriteFilterFile_AtomicReplace(t *testing.T) {
 	}
 }
 
-func TestWriteFilterFile_UnwritableDir(t *testing.T) {
+func TestWriteFilterFile_PreservesExistingPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "filter")
+	if err := os.WriteFile(path, []byte("old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Set exact permissions (bypass umask)
+	if err := os.Chmod(path, 0664); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFilterFile(path, []string{"new"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// os.WriteFile on existing file preserves permissions
+	if perm := info.Mode().Perm(); perm != 0664 {
+		t.Errorf("perm = %o, want 0664 (should preserve existing)", perm)
+	}
+}
+
+func TestWriteFilterFile_UnwritablePath(t *testing.T) {
 	err := writeFilterFile("/nonexistent/deep/path/filter", []string{"test"})
 	if err == nil {
-		t.Fatal("expected error for unwritable directory")
+		t.Fatal("expected error for unwritable path")
 	}
-	if !strings.Contains(err.Error(), "creating temp file") {
-		t.Errorf("error = %q, want 'creating temp file' prefix", err.Error())
+	if !strings.Contains(err.Error(), "writing filter file") {
+		t.Errorf("error = %q, want 'writing filter file' prefix", err.Error())
 	}
 }

@@ -38,7 +38,7 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  [SKIP] config path checks: %v\n", err)
 		} else {
-			printResults(preflight.CheckConfigPaths(cfg.ImagesDir, cfg.CloudinitDir), "WARN")
+			printResults(preflight.CheckConfigPaths(cfg.ImagesDir, cfg.CloudinitDir, cfg.Proxy.FilterFile), "WARN")
 		}
 
 		return nil
