@@ -48,30 +48,30 @@ var destroyCmd = &cobra.Command{
 			}
 		}
 
-		vmState, _ := vm.State(name)
-		if vmState == "running" {
-			fmt.Fprintln(os.Stderr, "Stopping VM...")
-			if err := vm.ForceStop(name); err != nil {
-				return fmt.Errorf("force-stopping VM: %w", err)
-			}
+		// Best-effort stop and undefine — always attempt both, warn on failure
+		fmt.Fprintln(os.Stderr, "Stopping VM...")
+		if err := vm.ForceStop(name); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: stop: %v\n", err)
 		}
 
-		if defined, _ := vm.IsDefined(name); defined {
-			fmt.Fprintln(os.Stderr, "Undefining VM...")
-			if err := vm.Undefine(name); err != nil {
-				return fmt.Errorf("undefining VM: %w", err)
-			}
+		fmt.Fprintln(os.Stderr, "Undefining VM...")
+		if err := vm.Undefine(name); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: undefine: %v\n", err)
 		}
 
-		_ = os.Remove(filepath.Join(cfg.ImagesDir, st.OverlayName))
-		_ = os.Remove(st.CloudInitISO)
+		warnRemove(filepath.Join(cfg.ImagesDir, st.OverlayName))
+		warnRemove(st.CloudInitISO)
 
 		if purgeFlag {
-			_ = os.Remove(filepath.Join(cfg.ImagesDir, st.DataDiskName))
-			_ = os.RemoveAll(filepath.Join(dir, "keys", name))
+			warnRemove(filepath.Join(cfg.ImagesDir, st.DataDiskName))
+			if err := os.RemoveAll(filepath.Join(dir, "keys", name)); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: removing keys: %v\n", err)
+			}
 		}
 
-		_ = state.Delete(dir, name)
+		if err := state.Delete(dir, name); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: removing state: %v\n", err)
+		}
 
 		fmt.Fprintf(os.Stderr, "Instance %q destroyed.\n", name)
 		return nil

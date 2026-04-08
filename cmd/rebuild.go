@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/antoniocascais/motoko/pkg/cloudinit"
@@ -52,7 +51,9 @@ var rebuildCmd = &cobra.Command{
 		}
 
 		progress(3, totalSteps, "Stopping VM")
-		_ = vm.ForceStop(name)
+		if err := vm.ForceStop(name); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: stop: %v\n", err)
+		}
 
 		progress(4, totalSteps, "Resetting overlay")
 		if err := vm.ResetOverlay(cfg.ImagesDir, cfg.GoldenImage.Name, st.OverlayName); err != nil {
@@ -66,36 +67,15 @@ var rebuildCmd = &cobra.Command{
 		}
 		sshKeys := []string{pubkey}
 
-		if st.OperatorKeyPath != "" {
-			data, err := os.ReadFile(st.OperatorKeyPath)
-			if err != nil {
-				return fmt.Errorf("reading operator SSH key %s: %w", st.OperatorKeyPath, err)
-			}
-			sshKeys = append(sshKeys, strings.TrimSpace(string(data)))
+		operatorKey, persona, err := loadOperatorKeyAndPersona(st.OperatorKeyPath, st.PersonaPath)
+		if err != nil {
+			return err
+		}
+		if operatorKey != "" {
+			sshKeys = append(sshKeys, operatorKey)
 		}
 
-		var persona string
-		if st.PersonaPath != "" {
-			data, err := os.ReadFile(st.PersonaPath)
-			if err != nil {
-				return fmt.Errorf("reading persona %s: %w", st.PersonaPath, err)
-			}
-			persona = string(data)
-		}
-
-		params, err := cloudinit.NewInstanceParams(cfg, name, name, token, sshKeys, persona)
-		if err != nil {
-			return err
-		}
-		userdata, err := cloudinit.RenderUserData(params)
-		if err != nil {
-			return err
-		}
-		metadata, err := cloudinit.RenderMetaData(name, name)
-		if err != nil {
-			return err
-		}
-		if err := cloudinit.BuildISO(userdata, metadata, st.CloudInitISO); err != nil {
+		if err := renderAndBuildISO(cfg, name, token, sshKeys, persona, st.CloudInitISO); err != nil {
 			return err
 		}
 

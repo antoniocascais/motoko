@@ -33,7 +33,9 @@ var buildCmd = &cobra.Command{
 			return nil
 		}
 		if exists && forceRebuild {
-			_ = os.Remove(filepath.Join(cfg.ImagesDir, cfg.GoldenImage.Name))
+			if err := os.Remove(filepath.Join(cfg.ImagesDir, cfg.GoldenImage.Name)); err != nil {
+				return fmt.Errorf("removing existing golden image: %w", err)
+			}
 		}
 
 		fmt.Fprintln(os.Stderr, "Building golden image (this may take several minutes)...")

@@ -3,6 +3,7 @@ package vm
 import (
 	"crypto/sha512"
 	"encoding/hex"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -34,6 +35,22 @@ func mockRunnerWithFunc(t *testing.T, fn runFunc) *[]execRecord {
 	}
 	t.Cleanup(func() { runCmd = original })
 	return &records
+}
+
+// roundTripFunc adapts a function to http.RoundTripper for test transport injection.
+type roundTripFunc func(*http.Request) *http.Response
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req), nil
+}
+
+// mockHTTPClient replaces the package-level httpClient with one using the given
+// transport function. Original client is restored via t.Cleanup.
+func mockHTTPClient(t *testing.T, fn roundTripFunc) {
+	t.Helper()
+	orig := httpClient
+	httpClient = &http.Client{Transport: fn}
+	t.Cleanup(func() { httpClient = orig })
 }
 
 // writeBaseImage creates a fake base image in dir and returns its sha512 checksum string.

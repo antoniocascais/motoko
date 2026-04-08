@@ -179,9 +179,12 @@ func ListAll() ([]VMInfo, error) {
 			continue
 		}
 		shortName := strings.TrimPrefix(name, vmPrefix)
-		state, _ := State(shortName)
-		vm := VMInfo{Name: shortName, State: state}
-		if state == "running" {
+		st, err := State(shortName)
+		if err != nil {
+			st = "unknown"
+		}
+		vm := VMInfo{Name: shortName, State: st}
+		if st == "running" {
 			vm.IP, _ = GetIP(shortName)
 		}
 		vms = append(vms, vm)

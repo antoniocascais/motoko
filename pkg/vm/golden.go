@@ -16,6 +16,10 @@ import (
 	"time"
 )
 
+// httpClient is the shared HTTP client for image downloads and checksum fetches.
+// Tests replace this via mockHTTPClient to avoid real network calls.
+var httpClient = &http.Client{Timeout: 5 * time.Minute}
+
 // validVMUser matches safe Unix usernames for interpolation into virt-customize --run-command.
 var validVMUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
 
@@ -117,8 +121,7 @@ func FetchDebianChecksum(baseURL, filename string) (string, error) {
 	dir := baseURL[:strings.LastIndex(baseURL, "/")+1]
 	checksumsURL := dir + "SHA512SUMS"
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(checksumsURL)
+	resp, err := httpClient.Get(checksumsURL)
 	if err != nil {
 		return "", fmt.Errorf("fetching %s: %w", checksumsURL, err)
 	}
@@ -152,8 +155,7 @@ func downloadBaseImage(url, destPath, checksum string) error {
 		return verifyChecksum(destPath, checksum)
 	}
 
-	client := &http.Client{}
-	resp, err := client.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return fmt.Errorf("downloading %s: %w", url, err)
 	}

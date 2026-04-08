@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/antoniocascais/motoko/pkg/cloudinit"
@@ -25,7 +24,16 @@ var createCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		const totalSteps = 17
+		const totalSteps = 15
+
+		// Cleanup stack: on failure, roll back side effects in reverse order.
+		// Cleared on success after state.Save.
+		var cleanups []func()
+		defer func() {
+			for i := len(cleanups) - 1; i >= 0; i-- {
+				cleanups[i]()
+			}
+		}()
 
 		progress(1, totalSteps, "Validating instance name")
 		if err := cloudinit.ValidateInstanceName(name); err != nil {
@@ -65,71 +73,55 @@ var createCmd = &cobra.Command{
 		}
 		sshKeys := []string{pubkey}
 
-		if sshKeyFlag != "" {
-			progress(6, totalSteps, "Loading operator SSH key")
-			data, err := os.ReadFile(sshKeyFlag)
-			if err != nil {
-				return fmt.Errorf("reading SSH key %s: %w", sshKeyFlag, err)
-			}
-			sshKeys = append(sshKeys, strings.TrimSpace(string(data)))
-		} else {
-			progress(6, totalSteps, "No operator SSH key specified, skipping")
-		}
-
-		var persona string
-		if personaFlag != "" {
-			progress(7, totalSteps, "Loading persona")
-			data, err := os.ReadFile(personaFlag)
-			if err != nil {
-				return fmt.Errorf("reading persona %s: %w", personaFlag, err)
-			}
-			persona = string(data)
-		} else {
-			progress(7, totalSteps, "No persona specified, skipping")
-		}
-
-		progress(8, totalSteps, "Rendering cloud-init templates")
-		params, err := cloudinit.NewInstanceParams(cfg, name, name, token, sshKeys, persona)
-		if err != nil {
-			return fmt.Errorf("cloud-init params: %w", err)
-		}
-		userdata, err := cloudinit.RenderUserData(params)
+		progress(6, totalSteps, "Loading operator key and persona")
+		operatorKey, persona, err := loadOperatorKeyAndPersona(sshKeyFlag, personaFlag)
 		if err != nil {
 			return err
 		}
-		metadata, err := cloudinit.RenderMetaData(name, name)
-		if err != nil {
-			return err
+		if operatorKey != "" {
+			sshKeys = append(sshKeys, operatorKey)
 		}
 
-		progress(9, totalSteps, "Building cloud-init ISO")
+		progress(7, totalSteps, "Building cloud-init ISO")
 		isoName := fmt.Sprintf("motoko-%s-cloud-init.iso", name)
 		isoPath := filepath.Join(cfg.CloudinitDir, isoName)
-		if err := cloudinit.BuildISO(userdata, metadata, isoPath); err != nil {
+		if err := renderAndBuildISO(cfg, name, token, sshKeys, persona, isoPath); err != nil {
 			return err
 		}
+		cleanups = append(cleanups, func() {
+			fmt.Fprintf(os.Stderr, "Rollback: removing %s\n", isoPath)
+			warnRemove(isoPath)
+		})
 
-		progress(10, totalSteps, "Creating data disk")
+		progress(8, totalSteps, "Creating data disk")
 		dataName := fmt.Sprintf("motoko-%s-data.qcow2", name)
 		dataPath := filepath.Join(cfg.ImagesDir, dataName)
 		if _, err := os.Stat(dataPath); os.IsNotExist(err) {
 			if err := vm.CreateDataDisk(cfg.ImagesDir, dataName, cfg.VMDefaults.DataDiskGB); err != nil {
 				return fmt.Errorf("creating data disk: %w", err)
 			}
+			cleanups = append(cleanups, func() {
+				fmt.Fprintf(os.Stderr, "Rollback: removing %s\n", dataPath)
+				warnRemove(dataPath)
+			})
 		} else if err != nil {
 			return fmt.Errorf("checking data disk: %w", err)
 		} else {
 			fmt.Fprintln(os.Stderr, "     Data disk exists, reusing")
 		}
 
-		progress(11, totalSteps, "Creating overlay disk")
+		progress(9, totalSteps, "Creating overlay disk")
 		overlayName := fmt.Sprintf("motoko-%s-overlay.qcow2", name)
 		overlayPath := filepath.Join(cfg.ImagesDir, overlayName)
 		if err := vm.CreateOverlay(cfg.ImagesDir, cfg.GoldenImage.Name, overlayName); err != nil {
 			return fmt.Errorf("creating overlay: %w", err)
 		}
+		cleanups = append(cleanups, func() {
+			fmt.Fprintf(os.Stderr, "Rollback: removing %s\n", overlayPath)
+			warnRemove(overlayPath)
+		})
 
-		progress(12, totalSteps, "Defining VM")
+		progress(10, totalSteps, "Defining VM")
 		if err := vm.Define(vm.DefineConfig{
 			Name:         name,
 			VCPUs:        cfg.VMDefaults.VCPUs,
@@ -142,23 +134,35 @@ var createCmd = &cobra.Command{
 		}); err != nil {
 			return fmt.Errorf("defining VM: %w", err)
 		}
+		cleanups = append(cleanups, func() {
+			fmt.Fprintf(os.Stderr, "Rollback: undefining VM %q\n", name)
+			if err := vm.Undefine(name); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: undefine: %v\n", err)
+			}
+		})
 
-		progress(13, totalSteps, "Applying resource limits")
+		progress(11, totalSteps, "Applying resource limits")
 		if err := vm.ApplyTuning(name, cfg.VMDefaults.BlkioWeight, cfg.VMDefaults.NetBandwidthKB, cfg.VMDefaults.RAMMB); err != nil {
 			return fmt.Errorf("applying tuning: %w", err)
 		}
 
-		progress(14, totalSteps, "Disabling autostart")
+		progress(12, totalSteps, "Disabling autostart")
 		if err := vm.DisableAutostart(name); err != nil {
 			return fmt.Errorf("disabling autostart: %w", err)
 		}
 
-		progress(15, totalSteps, "Starting VM")
+		progress(13, totalSteps, "Starting VM")
 		if err := vm.Start(name); err != nil {
 			return fmt.Errorf("starting VM: %w", err)
 		}
+		cleanups = append(cleanups, func() {
+			fmt.Fprintf(os.Stderr, "Rollback: stopping VM %q\n", name)
+			if err := vm.ForceStop(name); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: stop: %v\n", err)
+			}
+		})
 
-		progress(16, totalSteps, "Waiting for SSH (up to 120s)")
+		progress(14, totalSteps, "Waiting for SSH (up to 120s)")
 		ip, err := waitForIP(name, 60*time.Second)
 		if err != nil {
 			return err
@@ -167,7 +171,7 @@ var createCmd = &cobra.Command{
 			return fmt.Errorf("waiting for SSH: %w", err)
 		}
 
-		progress(17, totalSteps, "Saving instance state")
+		progress(15, totalSteps, "Saving instance state")
 		if err := state.Save(dir, name, &state.InstanceState{
 			Name:             name,
 			CreatedAt:        time.Now(),
@@ -181,6 +185,9 @@ var createCmd = &cobra.Command{
 		}); err != nil {
 			return fmt.Errorf("saving state: %w", err)
 		}
+
+		// Success — disarm all rollback actions
+		cleanups = nil
 
 		fmt.Fprintf(os.Stderr, "\nInstance %q created successfully.\n", name)
 		fmt.Fprintf(os.Stderr, "  IP:  %s\n", ip)
