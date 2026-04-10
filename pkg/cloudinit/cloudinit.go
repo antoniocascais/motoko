@@ -45,6 +45,9 @@ const (
 
 var funcMap = template.FuncMap{
 	"indent": func(spaces int, s string) string {
+		if spaces < 0 {
+			spaces = 0
+		}
 		pad := strings.Repeat(" ", spaces)
 		lines := strings.Split(s, "\n")
 		for i, line := range lines {
@@ -61,8 +64,10 @@ func NewInstanceParams(cfg *config.Config, name, hostname, telegramToken string,
 	if err := ValidateHostname(hostname); err != nil {
 		return nil, err
 	}
-	if err := ValidateTelegramToken(telegramToken); err != nil {
-		return nil, err
+	if telegramToken != "" {
+		if err := ValidateTelegramToken(telegramToken); err != nil {
+			return nil, err
+		}
 	}
 
 	proxyURL := fmt.Sprintf("http://%s:%d", cfg.Network.BridgeIP, cfg.Proxy.Port)

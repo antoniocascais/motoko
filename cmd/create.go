@@ -58,10 +58,13 @@ var createCmd = &cobra.Command{
 			return fmt.Errorf("golden image not found — run `motoko build` first")
 		}
 
-		progress(4, totalSteps, "Reading Telegram bot token")
-		token, err := requireEnv(tokenEnvFlag)
-		if err != nil {
-			return err
+		var token string
+		if tokenEnvFlag != "" {
+			progress(4, totalSteps, "Reading Telegram bot token")
+			token, err = requireEnv(tokenEnvFlag)
+			if err != nil {
+				return err
+			}
 		}
 
 		dir := configDir()
@@ -197,8 +200,7 @@ var createCmd = &cobra.Command{
 }
 
 func init() {
-	createCmd.Flags().StringVar(&tokenEnvFlag, "token-env", "", "environment variable containing Telegram bot token (required)")
-	_ = createCmd.MarkFlagRequired("token-env")
+	createCmd.Flags().StringVar(&tokenEnvFlag, "token-env", "", "environment variable containing Telegram bot token")
 	createCmd.Flags().StringVar(&sshKeyFlag, "ssh-key", "", "path to operator SSH public key file")
 	createCmd.Flags().StringVar(&personaFlag, "persona", "", "path to persona markdown file")
 	rootCmd.AddCommand(createCmd)

@@ -29,9 +29,8 @@ vim ~/.config/motoko/config.yml
 # Build the golden base image (downloads Debian cloud image, ~5 min)
 ./dist/motoko build
 
-# Create an instance
-export MY_BOT_TOKEN="your-telegram-bot-token"
-./dist/motoko create my-agent --token-env MY_BOT_TOKEN
+# Create an instance (add --token-env for Telegram bot support)
+./dist/motoko create my-agent
 
 # Interact
 ./dist/motoko logs my-agent         # watch Claude Code output
@@ -45,6 +44,26 @@ export MY_BOT_TOKEN="your-telegram-bot-token"
 ./dist/motoko destroy my-agent --purge
 ```
 
+## Post-create setup
+
+After `motoko create`, SSH in to authenticate Claude Code and configure git:
+
+```bash
+motoko ssh my-agent
+
+# Inside the VM:
+claude login
+
+# Force HTTPS for GitHub (VM has no DNS, SSH git clone fails)
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+# Restart the service to pick up the new credentials
+systemctl --user restart claude-assistant.service
+```
+
+To set up the Telegram bot plugin, see [docs/telegram-plugin-setup.md](docs/telegram-plugin-setup.md).
+
 ## Commands
 
 ![motoko interaction demo](docs/demo-interact.gif)
@@ -54,7 +73,7 @@ export MY_BOT_TOKEN="your-telegram-bot-token"
 motoko init                          Check prerequisites, create default config
 motoko build [--force]               Build golden base image
 motoko create <name>                 Create a new instance
-  --token-env VAR                      env var with Telegram bot token (required)
+  --token-env VAR                      env var with Telegram bot token
   --ssh-key PATH                       operator SSH public key file
   --persona PATH                       persona markdown file
 motoko list                          List all instances

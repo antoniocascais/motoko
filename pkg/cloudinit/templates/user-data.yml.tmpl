@@ -34,14 +34,14 @@ write_files:
   - path: /home/{{ .VMUser }}/.config/systemd/user/claude-assistant.service
     content: |
       [Unit]
-      Description=Claude Code Telegram Assistant
+      Description=Claude Code Assistant
       After=network-online.target
       Wants=network-online.target
 
       [Service]
       Type=forking
       WorkingDirectory=/home/{{ .VMUser }}/data
-      ExecStart=/usr/bin/tmux new-session -d -s claude '/usr/local/bin/claude --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official'
+      ExecStart=/usr/bin/tmux new-session -d -s claude '/usr/local/bin/claude --dangerously-skip-permissions{{ if .TelegramBotToken }} --channels plugin:telegram@claude-plugins-official{{ end }}'
       ExecStartPost=/bin/bash -c 'sleep 5 && /usr/bin/tmux send-keys -t claude Enter && sleep 3 && /usr/bin/tmux send-keys -t claude Enter'
       ExecStop=/usr/bin/tmux kill-session -t claude
       Restart=on-failure
@@ -50,19 +50,19 @@ write_files:
 
       [Install]
       WantedBy=default.target
-  - path: /home/{{ .VMUser }}/.claude/channels/telegram/.env
+{{ if .TelegramBotToken }}  - path: /home/{{ .VMUser }}/.claude/channels/telegram/.env
     permissions: "0600"
     content: |
       TELEGRAM_BOT_TOKEN={{ .TelegramBotToken }}
-  - path: /home/{{ .VMUser }}/.claude-env
+{{ end }}  - path: /home/{{ .VMUser }}/.claude-env
     permissions: "0600"
     content: |
-      TELEGRAM_BOT_TOKEN={{ .TelegramBotToken }}
-      https_proxy={{ .ProxyURL }}
+{{ if .TelegramBotToken }}      TELEGRAM_BOT_TOKEN={{ .TelegramBotToken }}
+{{ end }}      https_proxy={{ .ProxyURL }}
       HTTPS_PROXY={{ .ProxyURL }}
   - path: /home/{{ .VMUser }}/.bash_aliases
     content: |
-      alias claude='claude --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official'
+      alias claude='claude --dangerously-skip-permissions{{ if .TelegramBotToken }} --channels plugin:telegram@claude-plugins-official{{ end }}'
   - path: /home/{{ .VMUser }}/CLAUDE.md
     content: |
 {{ indent 6 .ClaudeMD }}

@@ -31,6 +31,18 @@ func testParams(t *testing.T) *InstanceParams {
 	return params
 }
 
+func testParamsNoTelegram(t *testing.T) *InstanceParams {
+	t.Helper()
+	cfg := testConfig()
+	params, err := NewInstanceParams(cfg, "test-vm", "test-vm", "", []string{
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest1 user@host",
+	}, "")
+	if err != nil {
+		t.Fatalf("NewInstanceParams() error = %v", err)
+	}
+	return params
+}
+
 func renderUserData(t *testing.T, params *InstanceParams) string {
 	t.Helper()
 	data, err := RenderUserData(params)
@@ -48,6 +60,9 @@ func TestNewInstanceParams_RejectsInvalidHostname(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for hostname with newline")
 	}
+	if !strings.Contains(err.Error(), "hostname") {
+		t.Errorf("error should mention hostname, got: %v", err)
+	}
 }
 
 func TestNewInstanceParams_RejectsInvalidToken(t *testing.T) {
@@ -55,6 +70,50 @@ func TestNewInstanceParams_RejectsInvalidToken(t *testing.T) {
 	_, err := NewInstanceParams(cfg, "vm1", "vm1", "not-a-token", nil, "")
 	if err == nil {
 		t.Error("expected error for invalid telegram token")
+	}
+	if !strings.Contains(err.Error(), "telegram token") {
+		t.Errorf("error should mention telegram token, got: %v", err)
+	}
+}
+
+func TestNewInstanceParams_SingleCharHostname(t *testing.T) {
+	cfg := testConfig()
+	params, err := NewInstanceParams(cfg, "vm1", "a", testToken, nil, "")
+	if err != nil {
+		t.Fatalf("single char hostname should be valid, got: %v", err)
+	}
+	output := renderUserData(t, params)
+	if !strings.Contains(output, "hostname: a") {
+		t.Error("user-data missing single-char hostname")
+	}
+}
+
+func TestNewInstanceParams_MaxLengthHostname(t *testing.T) {
+	cfg := testConfig()
+	// 253 chars: max RFC 1123 hostname length
+	hostname := strings.Repeat("a", 253)
+	params, err := NewInstanceParams(cfg, "vm1", hostname, testToken, nil, "")
+	if err != nil {
+		t.Fatalf("253-char hostname should be valid, got: %v", err)
+	}
+	output := renderUserData(t, params)
+
+	yamlContent := strings.TrimPrefix(output, "#cloud-config\n")
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(yamlContent), &parsed); err != nil {
+		t.Fatalf("user-data with max-length hostname is not valid YAML: %v", err)
+	}
+	if !strings.Contains(output, "hostname: "+hostname) {
+		t.Error("user-data missing max-length hostname")
+	}
+}
+
+func TestNewInstanceParams_OverMaxLengthHostname(t *testing.T) {
+	cfg := testConfig()
+	hostname := strings.Repeat("a", 254)
+	_, err := NewInstanceParams(cfg, "vm1", hostname, testToken, nil, "")
+	if err == nil {
+		t.Error("254-char hostname should be rejected")
 	}
 }
 
@@ -449,6 +508,15 @@ func TestIndent_MultipleLines(t *testing.T) {
 	}
 }
 
+func TestIndent_NegativeSpaces(t *testing.T) {
+	fn := funcMap["indent"].(func(int, string) string)
+	// Negative indent should not panic — treat as zero
+	result := fn(-1, "hello")
+	if result != "hello" {
+		t.Errorf("indent(-1) should be no-op, got %q", result)
+	}
+}
+
 func TestIndent_PreservesEmptyLines(t *testing.T) {
 	fn := funcMap["indent"].(func(int, string) string)
 	result := fn(4, "line1\n\nline3")
@@ -534,6 +602,76 @@ func TestRenderMetaData_FieldCount(t *testing.T) {
 	}
 }
 
+// --- Optional Telegram tests ---
+
+func TestNewInstanceParams_AcceptsEmptyToken(t *testing.T) {
+	cfg := testConfig()
+	params, err := NewInstanceParams(cfg, "vm1", "vm1", "", nil, "")
+	if err != nil {
+		t.Fatalf("empty token should be accepted, got error: %v", err)
+	}
+	if params.TelegramBotToken != "" {
+		t.Errorf("TelegramBotToken = %q, want empty", params.TelegramBotToken)
+	}
+}
+
+func TestRenderUserData_NoTelegram_OmitsTelegramEnvFiles(t *testing.T) {
+	output := renderUserData(t, testParamsNoTelegram(t))
+	if strings.Contains(output, "TELEGRAM_BOT_TOKEN") {
+		t.Error("user-data should not contain TELEGRAM_BOT_TOKEN when token is empty")
+	}
+	if strings.Contains(output, "channels/telegram/.env") {
+		t.Error("user-data should not write telegram .env when token is empty")
+	}
+}
+
+func TestRenderUserData_NoTelegram_ServiceWithoutChannels(t *testing.T) {
+	output := renderUserData(t, testParamsNoTelegram(t))
+	if strings.Contains(output, "--channels") {
+		t.Error("claude-assistant service should not include --channels when no telegram token")
+	}
+	if !strings.Contains(output, "claude --dangerously-skip-permissions") {
+		t.Error("claude-assistant service should still start claude without --channels")
+	}
+}
+
+func TestRenderUserData_NoTelegram_AliasWithoutChannels(t *testing.T) {
+	output := renderUserData(t, testParamsNoTelegram(t))
+	if !strings.Contains(output, "alias claude=") {
+		t.Fatal("bash alias for claude should be present")
+	}
+	if strings.Contains(output, "--channels") {
+		t.Error("bash alias should not include --channels when no telegram token")
+	}
+}
+
+func TestRenderUserData_NoTelegram_WriteFilesCount(t *testing.T) {
+	output := renderUserData(t, testParamsNoTelegram(t))
+	// Without telegram: sysctl, apt proxy, environment, hosts, systemd service,
+	// claude-env (proxy only), bash_aliases, CLAUDE.md, claude-restart.sh, cmd-queue.sh = 10
+	// (telegram .env is the only one dropped)
+	count := strings.Count(output, "  - path: /")
+	if count != 10 {
+		t.Errorf("write_files without telegram should have 10 entries, got %d", count)
+	}
+}
+
+func TestRenderUserData_NoTelegram_ValidYAML(t *testing.T) {
+	output := renderUserData(t, testParamsNoTelegram(t))
+	yamlContent := strings.TrimPrefix(output, "#cloud-config\n")
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(yamlContent), &parsed); err != nil {
+		t.Fatalf("user-data without telegram is not valid YAML: %v\n\ncontent:\n%s", err, output)
+	}
+}
+
+func TestRenderUserData_WithTelegram_StillHasChannels(t *testing.T) {
+	output := renderUserData(t, testParams(t))
+	if !strings.Contains(output, "--channels plugin:telegram@claude-plugins-official") {
+		t.Error("service should include --channels when telegram token is set")
+	}
+}
+
 // --- BuildISO tests ---
 
 func TestBuildISO_MissingBinary(t *testing.T) {
@@ -544,6 +682,37 @@ func TestBuildISO_MissingBinary(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "cloud-localds") {
 		t.Errorf("error should mention cloud-localds, got: %v", err)
+	}
+}
+
+func TestBuildISO_OverwriteExisting(t *testing.T) {
+	if _, err := exec.LookPath("cloud-localds"); err != nil {
+		t.Skip("cloud-localds not in PATH")
+	}
+
+	outPath := filepath.Join(t.TempDir(), "test.iso")
+	userdata := []byte("#cloud-config\nhostname: test\n")
+	metadata := []byte("instance-id: test\nlocal-hostname: test\n")
+
+	// First build
+	if err := BuildISO(userdata, metadata, outPath); err != nil {
+		t.Fatalf("first BuildISO() error = %v", err)
+	}
+	first, _ := os.Stat(outPath)
+
+	// Second build on same path (rebuild scenario)
+	if err := BuildISO(userdata, metadata, outPath); err != nil {
+		t.Fatalf("second BuildISO() error = %v", err)
+	}
+	second, err := os.Stat(outPath)
+	if err != nil {
+		t.Fatalf("ISO file missing after overwrite: %v", err)
+	}
+	if second.ModTime().Before(first.ModTime()) {
+		t.Error("ISO file was not overwritten")
+	}
+	if perm := second.Mode().Perm(); perm != 0600 {
+		t.Errorf("overwritten ISO permissions = %o, want 0600", perm)
 	}
 }
 

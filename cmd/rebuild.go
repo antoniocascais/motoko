@@ -44,10 +44,13 @@ var rebuildCmd = &cobra.Command{
 			}
 		}
 
-		progress(2, totalSteps, "Reading Telegram bot token")
-		token, err := requireEnv(st.TelegramTokenEnv)
-		if err != nil {
-			return err
+		var token string
+		if st.TelegramTokenEnv != "" {
+			progress(2, totalSteps, "Reading Telegram bot token")
+			token, err = requireEnv(st.TelegramTokenEnv)
+			if err != nil {
+				return err
+			}
 		}
 
 		progress(3, totalSteps, "Stopping VM")
