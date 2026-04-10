@@ -1,13 +1,75 @@
 # motoko
 
-KVM-isolated sandboxes for running Claude Code as an autonomous AI agent. Ephemeral VMs, network egress filtering, Telegram bot interface.
+KVM-isolated sandboxes for running Claude Code as an autonomous AI agent.
 
-## Why
+![motoko lifecycle demo](docs/demo-lifecycle.gif)
+*Spin up an isolated Claude Code VM and manage it from the terminal*
 
-You want to run an AI coding agent with shell access, unsupervised. You don't want it `curl`ing arbitrary endpoints or `rm -rf`ing the wrong directory. motoko puts each agent in a disposable VM where you control what goes in and out.
+## Features
 
-- **Network isolation** -- you allowlist specific domains through tinyproxy. No DNS in the VM. By default, only Anthropic's API and Telegram can be reached.
-- **Ephemeral compute, persistent data** -- the root disk resets on rebuild (qcow2 overlay). A separate data disk carries project state across rebuilds.
+- **Full VM isolation**: each agent runs in its own KVM virtual machine, not a container
+- **Network egress filtering**: allowlist specific domains through tinyproxy; no DNS in the VM
+- **Ephemeral compute, persistent data**: root disk resets on rebuild (qcow2 overlay), data disk persists
+- **Telegram bot interface**: send prompts and get responses via Telegram using [Claude Code official plugin](https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/telegram)
+- **Single-binary CLI**: lifecycle management, prompt injection, log tailing, proxy rules
+- **No local Go needed**: builds via Docker, runs on any Linux KVM host
+
+## Quick start
+
+```bash
+# Build the binary (uses Docker, no local Go needed)
+make build
+
+# Check prerequisites, generate default config
+./dist/motoko init
+
+# Review and edit config
+vim ~/.config/motoko/config.yml
+
+# Build the golden base image (downloads Debian cloud image, ~5 min)
+./dist/motoko build
+
+# Create an instance
+export MY_BOT_TOKEN="your-telegram-bot-token"
+./dist/motoko create my-agent --token-env MY_BOT_TOKEN
+
+# Interact
+./dist/motoko logs my-agent         # watch Claude Code output
+./dist/motoko inject my-agent "fix the tests in src/"
+./dist/motoko ssh my-agent           # shell into the VM
+
+# Reset without losing data
+./dist/motoko rebuild my-agent
+
+# Tear down
+./dist/motoko destroy my-agent --purge
+```
+
+## Commands
+
+![motoko interaction demo](docs/demo-interact.gif)
+*Inject prompts and read Claude Code output from a running instance*
+
+```
+motoko init                          Check prerequisites, create default config
+motoko build [--force]               Build golden base image
+motoko create <name>                 Create a new instance
+  --token-env VAR                      env var with Telegram bot token (required)
+  --ssh-key PATH                       operator SSH public key file
+  --persona PATH                       persona markdown file
+motoko list                          List all instances
+motoko ssh <name>                    SSH into an instance
+motoko logs <name>                   Show Claude Code tmux output
+motoko inject <name> <prompt>        Send a prompt to Claude Code
+motoko start <name>                  Start a stopped instance
+motoko stop <name>                   Gracefully shut down
+motoko rebuild <name> [--yes]        Reset overlay, preserve data disk
+motoko destroy <name> [--yes]        Remove instance
+  --purge                              also delete data disk, keys, and state
+motoko proxy list                    Show proxy domain allowlist
+motoko proxy add-domain <pattern>    Add domain regex to allowlist
+motoko proxy remove-domain <pattern> Remove domain regex from allowlist
+```
 
 ## Architecture
 
@@ -37,60 +99,6 @@ VM (motoko-<name>)
 - tinyproxy on port 3128, bound to the bridge IP (default `192.168.122.1`)
 - nftables rules isolating VMs from each other on virbr0
 - Docker (for building the binary only, no local Go toolchain needed)
-
-## Quick start
-
-```bash
-# Build the binary (uses Docker, no local Go needed)
-make build
-
-# Check prerequisites, generate default config
-./dist/motoko init
-
-# Review and edit config
-vim ~/.config/motoko/config.yml
-
-# Build the golden base image (downloads Debian cloud image, ~5 min)
-./dist/motoko build
-
-# Create an instance
-export MY_BOT_TOKEN="your-telegram-bot-token"
-./dist/motoko create my-agent --token-env MY_BOT_TOKEN
-
-# Interact
-./dist/motoko ssh my-agent          # shell into the VM
-./dist/motoko logs my-agent         # watch Claude Code output
-./dist/motoko inject my-agent "fix the tests in src/"
-
-# Reset without losing data
-./dist/motoko rebuild my-agent
-
-# Tear down
-./dist/motoko destroy my-agent --purge
-```
-
-## Commands
-
-```
-motoko init                          Check prerequisites, create default config
-motoko build [--force]               Build golden base image
-motoko create <name>                 Create a new instance
-  --token-env VAR                      env var with Telegram bot token (required)
-  --ssh-key PATH                       operator SSH public key file
-  --persona PATH                       persona markdown file
-motoko list                          List all instances
-motoko ssh <name>                    SSH into an instance
-motoko logs <name>                   Show Claude Code tmux output
-motoko inject <name> <prompt>        Send a prompt to Claude Code
-motoko start <name>                  Start a stopped instance
-motoko stop <name>                   Gracefully shut down
-motoko rebuild <name> [--yes]        Reset overlay, preserve data disk
-motoko destroy <name> [--yes]        Remove instance
-  --purge                              also delete data disk, keys, and state
-motoko proxy list                    Show proxy domain allowlist
-motoko proxy add-domain <pattern>    Add domain regex to allowlist
-motoko proxy remove-domain <pattern> Remove domain regex from allowlist
-```
 
 ## Host setup
 
@@ -128,7 +136,7 @@ proxy:
 - VMs have no DNS. You control egress through the host proxy's domain allowlist.
 - Instance names are user input. All shell commands use `exec.Command` with explicit arg lists, no `sh -c`.
 - cloud-init provisions the full system. Post-boot SSH is for operator interaction only, not configuration.
-- Each rebuild creates a fresh overlay from the golden image. The golden image itself is read-only.
+- Each rebuild creates a fresh overlay from the golden image. The golden image is read-only.
 - cloud-init ISOs contain the Telegram bot token and are `chmod 0600`.
 
 ## License
