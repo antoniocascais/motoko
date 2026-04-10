@@ -34,7 +34,15 @@ var destroyCmd = &cobra.Command{
 		dir := configDir()
 		st, err := state.Load(dir, name)
 		if err != nil {
-			return err
+			// No state file — orphaned VM from interrupted create.
+			// Fall back to convention-based names for best-effort cleanup.
+			fmt.Fprintf(os.Stderr, "Warning: no state file found, attempting best-effort cleanup\n")
+			st = &state.InstanceState{
+				OverlayName:  fmt.Sprintf("motoko-%s-overlay.qcow2", name),
+				DataDiskName: fmt.Sprintf("motoko-%s-data.qcow2", name),
+				CloudInitISO: filepath.Join(cfg.CloudinitDir, fmt.Sprintf("motoko-%s-cloud-init.iso", name)),
+				SSHKeyPath:   filepath.Join(dir, "keys", name, "id_ed25519"),
+			}
 		}
 
 		if !destroyYesFlag {

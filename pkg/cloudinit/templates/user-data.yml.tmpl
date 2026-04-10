@@ -103,6 +103,7 @@ runcmd:
   - rm -f /home/{{ .VMUser }}/data/.profile
   - chown -R {{ .VMUser }}:{{ .VMUser }} /home/{{ .VMUser }}
   - loginctl enable-linger {{ .VMUser }}
-  - sudo -u {{ .VMUser }} systemctl --user daemon-reload
-  - sudo -u {{ .VMUser }} systemctl --user enable claude-assistant.service
+  - sleep 2
+  - sudo -u {{ .VMUser }} XDG_RUNTIME_DIR=/run/user/$(id -u {{ .VMUser }}) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u {{ .VMUser }})/bus systemctl --user daemon-reload
+  - sudo -u {{ .VMUser }} XDG_RUNTIME_DIR=/run/user/$(id -u {{ .VMUser }}) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u {{ .VMUser }})/bus systemctl --user enable --now claude-assistant.service
   - rm -rf /var/lib/cloud/instances /run/cloud-init
