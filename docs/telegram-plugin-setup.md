@@ -6,7 +6,7 @@ cloud-init writes the bot token to the VM, but the Telegram plugin itself needs 
 
 ## 1. Open temporary proxy access
 
-The plugin installer pulls packages from GitHub and npm. Remove these domains when done (step 4).
+The plugin installer pulls packages from GitHub and npm. Remove these domains when done (step 5).
 
 ```bash
 motoko proxy add-domain '\.github\.com$'
@@ -47,9 +47,21 @@ cd ~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/teleg
 npm install
 ```
 
-Exit the VM.
+## 4. Configure the Telegram bot
 
-## 4. Remove temporary domains
+Start claude again and link the bot token:
+
+```bash
+claude
+```
+
+```
+/telegram:configure <YOUR_TELEGRAM_BOT_TOKEN>
+```
+
+Exit the Claude session and the VM.
+
+## 5. Remove temporary domains
 
 ```bash
 motoko proxy remove-domain '\.github\.com$'
@@ -58,7 +70,7 @@ motoko proxy remove-domain '^marketplace\.claude\.ai$'
 motoko proxy remove-domain '\.npmjs\.org$'
 ```
 
-## 5. Restart and verify
+## 6. Restart and verify
 
 ```bash
 motoko ssh <name> -- sudo -u claude \
