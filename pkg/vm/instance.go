@@ -8,8 +8,24 @@ import (
 
 const vmPrefix = "motoko-"
 
+// memtune hard-limit needs headroom over guest RAM to absorb QEMU process overhead
+// (vCPU stacks, KVM data structures, device emulation). Without it, qemu's RSS hits
+// the cgroup memcg cap at guest-RAM size and the kernel OOM-kills the VM.
+const (
+	hardLimitHeadroomPct   = 15
+	hardLimitHeadroomMinKB = 128 * 1024 // 128 MiB floor for small VMs
+)
+
 // libvirtName converts a user-facing instance name to the libvirt domain name.
 func libvirtName(name string) string { return vmPrefix + name }
+
+// hardLimitKiB returns the memtune --hard-limit value for a VM of ramMB MiB,
+// adding headroom (max of 15% or 128 MiB) over the guest RAM allocation.
+func hardLimitKiB(ramMB int) int {
+	ramKiB := ramMB * 1024
+	headroom := max(ramKiB*hardLimitHeadroomPct/100, hardLimitHeadroomMinKB)
+	return ramKiB + headroom
+}
 
 // DefineConfig holds parameters for defining a new VM via virt-install.
 type DefineConfig struct {
@@ -83,10 +99,50 @@ func ApplyTuning(name string, blkioWeight, netBandwidthKB, ramMB int) error {
 		}
 	}
 
-	// Memory hard limit (virsh memtune takes KiB)
-	ramKiB := ramMB * 1024
-	if _, _, err := runCmd("virsh", libvirtArgs("memtune", vmName, "--hard-limit", fmt.Sprintf("%d", ramKiB), "--config")...); err != nil {
+	// Memory hard limit (virsh memtune takes KiB). Uses hardLimitKiB which adds
+	// headroom over guest RAM so qemu's process overhead doesn't trip the OOM-killer.
+	if _, _, err := runCmd("virsh", libvirtArgs("memtune", vmName, "--hard-limit", fmt.Sprintf("%d", hardLimitKiB(ramMB)), "--config")...); err != nil {
 		return fmt.Errorf("memtune: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateResources persistently updates the VM's RAM (MiB) and/or vCPU count.
+// Zero values mean "leave unchanged". VM must be shut off; changes take effect on next start.
+//
+// libvirt rejects current > max, so max is always set before current. On reduction
+// (either RAM or vCPUs) this initial setmaxmem/setvcpus --maximum will fail because
+// max would go below current — bump down in two steps (lower current first, then run update).
+//
+// Order matters for partial-failure safety: memtune (hard-limit) runs BEFORE setmaxmem/setmem
+// so a transient memtune failure leaves both guest RAM and cgroup cap at the old value
+// rather than raising guest RAM past a stale (smaller) cap and OOM-killing on next start.
+func UpdateResources(name string, ramMB, vcpus int) error {
+	vmName := libvirtName(name)
+
+	if ramMB > 0 {
+		hardLimit := fmt.Sprintf("%d", hardLimitKiB(ramMB))
+		if _, _, err := runCmd("virsh", libvirtArgs("memtune", vmName, "--hard-limit", hardLimit, "--config")...); err != nil {
+			return fmt.Errorf("memtune: %w", err)
+		}
+		ramKiB := fmt.Sprintf("%d", ramMB*1024)
+		if _, _, err := runCmd("virsh", libvirtArgs("setmaxmem", vmName, ramKiB, "--config")...); err != nil {
+			return fmt.Errorf("setmaxmem: %w", err)
+		}
+		if _, _, err := runCmd("virsh", libvirtArgs("setmem", vmName, ramKiB, "--config")...); err != nil {
+			return fmt.Errorf("setmem: %w", err)
+		}
+	}
+
+	if vcpus > 0 {
+		v := fmt.Sprintf("%d", vcpus)
+		if _, _, err := runCmd("virsh", libvirtArgs("setvcpus", vmName, v, "--maximum", "--config")...); err != nil {
+			return fmt.Errorf("setvcpus --maximum: %w", err)
+		}
+		if _, _, err := runCmd("virsh", libvirtArgs("setvcpus", vmName, v, "--config")...); err != nil {
+			return fmt.Errorf("setvcpus: %w", err)
+		}
 	}
 
 	return nil
