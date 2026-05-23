@@ -186,11 +186,11 @@ func TestApplyTuning_MemtuneConversion(t *testing.T) {
 
 	_ = ApplyTuning("test", 200, 5000, 4096)
 
-	// memtune is the last call
+	// memtune is the last call. 4096 MiB → 4194304 KiB guest RAM; hard-limit
+	// adds 15% headroom (629145 KiB) to absorb QEMU process overhead → 4823449.
 	last := (*recs)[len(*recs)-1]
 	args := strings.Join(last.args, " ")
-	// 4096 MB * 1024 = 4194304 KiB
-	want := "--connect qemu:///system memtune motoko-test --hard-limit 4194304 --config"
+	want := "--connect qemu:///system memtune motoko-test --hard-limit 4823449 --config"
 	if args != want {
 		t.Errorf("memtune args = %q, want %q", args, want)
 	}
@@ -390,6 +390,7 @@ func TestLibvirtCommands_IncludeConnectFlag(t *testing.T) {
 			})
 		}, 1},
 		{"ApplyTuning", func() { _ = ApplyTuning("test", 200, 5000, 4096) }, 4},
+		{"UpdateResources", func() { _ = UpdateResources("test", 8192, 4) }, 5},
 	}
 
 	for _, tt := range tests {
@@ -654,6 +655,197 @@ func TestParseIPFromDomifaddr_FalsePositiveResistance(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := parseIPFromDomifaddr(tt.input); got != tt.want {
 				t.Errorf("parseIPFromDomifaddr() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpdateResources_RAMOnly(t *testing.T) {
+	recs := mockRunner(t)
+	if err := UpdateResources("test", 8192, 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*recs) != 3 {
+		t.Fatalf("expected 3 calls, got %d", len(*recs))
+	}
+	// memtune runs FIRST so a transient failure on the hard-limit step leaves
+	// memory unchanged (avoids the next-boot OOM scenario where setmem ok +
+	// memtune fail → guest RAM > cgroup cap).
+	wantOrder := []string{"memtune", "setmaxmem", "setmem"}
+	for i, w := range wantOrder {
+		if (*recs)[i].args[2] != w {
+			t.Errorf("call %d subcommand = %q, want %q", i+1, (*recs)[i].args[2], w)
+		}
+		joined := strings.Join((*recs)[i].args, " ")
+		if !strings.Contains(joined, "motoko-test") {
+			t.Errorf("call %d missing VM name 'motoko-test': %v", i+1, (*recs)[i].args)
+		}
+	}
+	// 8192 MiB * 1024 = 8388608 KiB; setmaxmem and setmem use the raw value.
+	for _, idx := range []int{1, 2} {
+		if !strings.Contains(strings.Join((*recs)[idx].args, " "), "8388608") {
+			t.Errorf("call %d missing memory KiB value 8388608: %v", idx+1, (*recs)[idx].args)
+		}
+	}
+	memtuneArgs := strings.Join((*recs)[0].args, " ")
+	if !strings.Contains(memtuneArgs, "--hard-limit") {
+		t.Errorf("memtune call missing --hard-limit: %v", (*recs)[0].args)
+	}
+	// memtune must exceed the guest RAM so qemu's process overhead doesn't trip
+	// the memcg OOM-killer. With ramMB=8192, 15% headroom yields 9646899 KiB.
+	if strings.Contains(memtuneArgs, " 8388608 ") {
+		t.Errorf("memtune --hard-limit must exceed guest RAM (got bare 8388608): %v", (*recs)[0].args)
+	}
+}
+
+func TestUpdateResources_HardLimitHeadroom(t *testing.T) {
+	// Headroom policy: max(15% of RAM, 128 MiB). Verify at a small VM (floor
+	// kicks in) and a larger VM (percentage dominates).
+	tests := []struct {
+		name         string
+		ramMB        int
+		wantHardKiB  int
+		minOverGuest int // sanity: hard-limit must exceed guest by at least this many KiB
+	}{
+		// 512 MiB → ramKiB=524288, 15% = 78643 < 128*1024 (131072). headroom=131072. total=655360.
+		{"floor applies at 512MiB", 512, 655360, 131072},
+		// 4096 MiB → ramKiB=4194304, 15% = 629145. headroom=629145. total=4823449.
+		{"percentage dominates at 4GiB", 4096, 4823449, 629145},
+		// 8192 MiB → ramKiB=8388608, 15% = 1258291. total=9646899.
+		{"percentage dominates at 8GiB", 8192, 9646899, 1258291},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recs := mockRunner(t)
+			if err := UpdateResources("test", tt.ramMB, 0); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			// memtune is call 1 (index 0) under the new ordering.
+			memtuneArgs := (*recs)[0].args
+			if memtuneArgs[2] != "memtune" {
+				t.Fatalf("call 1 = %q, want memtune", memtuneArgs[2])
+			}
+			// args layout: [--connect, URI, memtune, vmName, --hard-limit, VALUE, --config]
+			got := memtuneArgs[5]
+			want := fmt.Sprintf("%d", tt.wantHardKiB)
+			if got != want {
+				t.Errorf("hard-limit = %q, want %q (ramMB=%d, headroom>=%d KiB)",
+					got, want, tt.ramMB, tt.minOverGuest)
+			}
+		})
+	}
+}
+
+func TestUpdateResources_CPUsOnly(t *testing.T) {
+	recs := mockRunner(t)
+	if err := UpdateResources("test", 0, 4); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*recs) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(*recs))
+	}
+	first := strings.Join((*recs)[0].args, " ")
+	if !strings.Contains(first, "setvcpus") || !strings.Contains(first, "--maximum") {
+		t.Errorf("call 1 should be setvcpus --maximum, got %q", first)
+	}
+	second := strings.Join((*recs)[1].args, " ")
+	if !strings.Contains(second, "setvcpus") || strings.Contains(second, "--maximum") {
+		t.Errorf("call 2 should be setvcpus without --maximum, got %q", second)
+	}
+	// Positional check: libvirtArgs prepends [--connect, qemu:///system],
+	// so args[2]=setvcpus, args[3]=VM name, args[4]=vcpu count.
+	for i, r := range *recs {
+		if r.args[2] != "setvcpus" {
+			t.Errorf("call %d subcommand = %q, want 'setvcpus'", i+1, r.args[2])
+		}
+		if r.args[3] != "motoko-test" {
+			t.Errorf("call %d VM name = %q, want 'motoko-test'", i+1, r.args[3])
+		}
+		if r.args[4] != "4" {
+			t.Errorf("call %d vcpu count = %q, want '4'", i+1, r.args[4])
+		}
+	}
+}
+
+func TestUpdateResources_Both(t *testing.T) {
+	recs := mockRunner(t)
+	if err := UpdateResources("test", 4096, 2); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 3 RAM calls + 2 vCPU calls, RAM block must precede CPU block.
+	if len(*recs) != 5 {
+		t.Fatalf("expected 5 calls, got %d", len(*recs))
+	}
+	wantSubcmds := []string{"memtune", "setmaxmem", "setmem", "setvcpus", "setvcpus"}
+	for i, want := range wantSubcmds {
+		if (*recs)[i].args[2] != want {
+			t.Errorf("call %d subcommand = %q, want %q", i+1, (*recs)[i].args[2], want)
+		}
+	}
+	// --maximum belongs to call 4 only.
+	if !strings.Contains(strings.Join((*recs)[3].args, " "), "--maximum") {
+		t.Errorf("call 4 (setvcpus) missing --maximum: %v", (*recs)[3].args)
+	}
+	if strings.Contains(strings.Join((*recs)[4].args, " "), "--maximum") {
+		t.Errorf("call 5 (setvcpus) should not have --maximum: %v", (*recs)[4].args)
+	}
+}
+
+func TestUpdateResources_Noop(t *testing.T) {
+	recs := mockRunner(t)
+	if err := UpdateResources("test", 0, 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*recs) != 0 {
+		t.Errorf("expected 0 calls for noop, got %d", len(*recs))
+	}
+}
+
+func TestUpdateResources_AllConfigFlag(t *testing.T) {
+	recs := mockRunner(t)
+	_ = UpdateResources("test", 4096, 2)
+	for i, r := range *recs {
+		if !strings.Contains(strings.Join(r.args, " "), "--config") {
+			t.Errorf("call %d %v: missing --config", i, r.args)
+		}
+	}
+}
+
+func TestUpdateResources_PerCallFailure(t *testing.T) {
+	// Each of the 5 libvirt calls has its own failure path; the wrapped error
+	// must identify which step failed so operators can diagnose without re-running.
+	tests := []struct {
+		name      string
+		failOn    int // 1-based call index to inject failure
+		ram, cpus int
+		errSubstr string
+	}{
+		{"memtune", 1, 8192, 0, "memtune"},
+		{"setmaxmem", 2, 8192, 0, "setmaxmem"},
+		{"setmem", 3, 8192, 0, "setmem"},
+		{"setvcpus --maximum", 4, 8192, 4, "setvcpus --maximum"},
+		{"setvcpus", 5, 8192, 4, "setvcpus"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n := 0
+			mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
+				n++
+				if n == tt.failOn {
+					return "", "", fmt.Errorf("call %d boom", n)
+				}
+				return "", "", nil
+			})
+			err := UpdateResources("test", tt.ram, tt.cpus)
+			if err == nil {
+				t.Fatalf("expected error when call %d fails", tt.failOn)
+			}
+			if !strings.Contains(err.Error(), tt.errSubstr) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tt.errSubstr)
+			}
+			// Fail-fast: no virsh calls after the failing one.
+			if n != tt.failOn {
+				t.Errorf("expected fail-fast at call %d, got %d total calls", tt.failOn, n)
 			}
 		})
 	}

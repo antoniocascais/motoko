@@ -6,6 +6,8 @@ GO_IMAGE    := golang:1.23-alpine
 LINT_IMAGE  := golangci/golangci-lint:v2.1.6
 CACHE_DIR   := .cache
 
+COVERAGE_MIN := 80
+
 DOCKER_RUN  := docker run --rm \
 	--user $(shell id -u):$(shell id -g) \
 	--read-only \
@@ -28,10 +30,14 @@ build:
 	@mkdir -p $(DIST_DIR) $(CACHE_DIR)/go-build $(CACHE_DIR)/go-mod
 	$(DOCKER_RUN) $(GO_IMAGE) go build -buildvcs=false $(LDFLAGS) -o $(DIST_DIR)/$(APP_NAME) .
 
-## test: Run all tests
+## test: Run all tests; fail if coverage below $(COVERAGE_MIN)%
 test:
 	@mkdir -p $(CACHE_DIR)/go-build $(CACHE_DIR)/go-mod
-	$(DOCKER_RUN) $(GO_IMAGE) go test ./... -v -count=1
+	$(DOCKER_RUN) $(GO_IMAGE) go test ./... -v -count=1 -coverprofile=$(CACHE_DIR)/coverage.out
+	@set -e -o pipefail; \
+		cov=$$($(DOCKER_RUN) $(GO_IMAGE) go tool cover -func=$(CACHE_DIR)/coverage.out | awk '/^total:/ {print $$3}' | tr -d '%'); \
+		if [ -z "$$cov" ]; then echo "ERROR: could not parse coverage from $(CACHE_DIR)/coverage.out" >&2; exit 2; fi; \
+		awk -v c="$$cov" -v m="$(COVERAGE_MIN)" 'BEGIN { if (c+0 < m+0) { printf "FAIL: coverage %s%% < %s%% required\n", c, m; exit 1 } printf "OK: coverage %s%% >= %s%%\n", c, m }'
 
 ## lint: Run golangci-lint
 lint:

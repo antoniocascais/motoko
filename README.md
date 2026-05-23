@@ -83,6 +83,9 @@ motoko inject <name> <prompt>        Send a prompt to Claude Code
 motoko start <name>                  Start a stopped instance
 motoko stop <name>                   Gracefully shut down
 motoko rebuild <name> [--yes]        Reset overlay, preserve data disk
+motoko update <name>                 Bump RAM/vCPUs of a stopped instance
+  --ram <MiB>                          new RAM size (>= 512)
+  --cpus <N>                           new vCPU count (>= 1)
 motoko destroy <name> [--yes]        Remove instance
   --purge                              also delete data disk, keys, and state
 motoko proxy list                    Show proxy domain allowlist
