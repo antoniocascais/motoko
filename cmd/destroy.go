@@ -43,6 +43,11 @@ var destroyCmd = &cobra.Command{
 				CloudInitISO: filepath.Join(cfg.CloudinitDir, fmt.Sprintf("motoko-%s-cloud-init.iso", name)),
 				SSHKeyPath:   filepath.Join(dir, "keys", name, "id_ed25519"),
 			}
+			// Recover the DHCP reservation from the network XML by its deterministic
+			// name so orphaned instances still get their reservation cleaned up.
+			if mac, ip, found := vm.FindReservationByName(cfg.Network.LibvirtNetwork, name); found {
+				st.MAC, st.IP = mac, ip
+			}
 		}
 
 		if !destroyYesFlag {
@@ -65,6 +70,14 @@ var destroyCmd = &cobra.Command{
 		fmt.Fprintln(os.Stderr, "Undefining VM...")
 		if err := vm.Undefine(name); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: undefine: %v\n", err)
+		}
+
+		// Pre-feature instances have no MAC/IP in state and no reservation — skip.
+		if st.MAC != "" && st.IP != "" {
+			fmt.Fprintf(os.Stderr, "Removing DHCP reservation %s -> %s...\n", st.MAC, st.IP)
+			if err := vm.RemoveDHCPReservation(cfg.Network.LibvirtNetwork, st.MAC, name, st.IP); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: removing reservation: %v\n", err)
+			}
 		}
 
 		warnRemove(filepath.Join(cfg.ImagesDir, st.OverlayName))

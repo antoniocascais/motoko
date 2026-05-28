@@ -9,6 +9,7 @@ KVM-isolated sandboxes for running Claude Code as an autonomous AI agent.
 
 - **Full VM isolation**: each agent runs in its own KVM virtual machine, not a container
 - **Network egress filtering**: allowlist specific domains through tinyproxy; no DNS in the VM
+- **Stable per-instance IP**: each VM reserves a deterministic address before boot — concurrent creates never race for the same lease
 - **Ephemeral compute, persistent data**: root disk resets on rebuild (qcow2 overlay), data disk persists
 - **Telegram bot interface**: send prompts and get responses via Telegram using [Claude Code official plugin](https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/telegram)
 - **Single-binary CLI**: lifecycle management, prompt injection, log tailing, proxy rules

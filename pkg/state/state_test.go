@@ -18,6 +18,8 @@ func testState() *InstanceState {
 		OverlayName:      "motoko-test-vm-overlay.qcow2",
 		DataDiskName:     "motoko-test-vm-data.qcow2",
 		CloudInitISO:     "/var/lib/libvirt/cloud-init/motoko-test-vm-cloud-init.iso",
+		MAC:              "52:54:00:ab:cd:ef",
+		IP:               "192.168.122.254",
 	}
 }
 
@@ -92,6 +94,12 @@ func TestLoad_RoundTrip(t *testing.T) {
 	}
 	if loaded.CloudInitISO != orig.CloudInitISO {
 		t.Errorf("CloudInitISO = %q, want %q", loaded.CloudInitISO, orig.CloudInitISO)
+	}
+	if loaded.MAC != orig.MAC {
+		t.Errorf("MAC = %q, want %q", loaded.MAC, orig.MAC)
+	}
+	if loaded.IP != orig.IP {
+		t.Errorf("IP = %q, want %q", loaded.IP, orig.IP)
 	}
 }
 

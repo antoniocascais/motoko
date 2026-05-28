@@ -24,7 +24,7 @@ var createCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		const totalSteps = 15
+		const totalSteps = 17
 
 		// Cleanup stack: on failure, roll back side effects in reverse order.
 		// Cleared on success after state.Save.
@@ -144,17 +144,53 @@ var createCmd = &cobra.Command{
 			}
 		})
 
-		progress(11, totalSteps, "Applying resource limits")
+		progress(11, totalSteps, "Reading assigned MAC")
+		mac, err := vm.GetMAC(name)
+		if err != nil {
+			return fmt.Errorf("reading MAC: %w", err)
+		}
+
+		progress(12, totalSteps, "Reserving IP address")
+		var ip string
+		if err := withNetworkLock(dir, func() error {
+			active, err := vm.NetworkActive(cfg.Network.LibvirtNetwork)
+			if err != nil {
+				return err
+			}
+			if !active {
+				return fmt.Errorf("libvirt network %q is not active (run: virsh net-start %s)",
+					cfg.Network.LibvirtNetwork, cfg.Network.LibvirtNetwork)
+			}
+			allocated, err := vm.AllocateIP(cfg.Network.LibvirtNetwork, cfg.Network.BridgeIP)
+			if err != nil {
+				return err
+			}
+			if err := vm.AddDHCPReservation(cfg.Network.LibvirtNetwork, mac, name, allocated); err != nil {
+				return err
+			}
+			ip = allocated
+			return nil
+		}); err != nil {
+			return fmt.Errorf("reserving IP: %w", err)
+		}
+		cleanups = append(cleanups, func() {
+			fmt.Fprintf(os.Stderr, "Rollback: removing DHCP reservation %s -> %s\n", mac, ip)
+			if err := vm.RemoveDHCPReservation(cfg.Network.LibvirtNetwork, mac, name, ip); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: removing reservation: %v\n", err)
+			}
+		})
+
+		progress(13, totalSteps, "Applying resource limits")
 		if err := vm.ApplyTuning(name, cfg.VMDefaults.BlkioWeight, cfg.VMDefaults.NetBandwidthKB, cfg.VMDefaults.RAMMB); err != nil {
 			return fmt.Errorf("applying tuning: %w", err)
 		}
 
-		progress(12, totalSteps, "Disabling autostart")
+		progress(14, totalSteps, "Disabling autostart")
 		if err := vm.DisableAutostart(name); err != nil {
 			return fmt.Errorf("disabling autostart: %w", err)
 		}
 
-		progress(13, totalSteps, "Starting VM")
+		progress(15, totalSteps, "Starting VM")
 		if err := vm.Start(name); err != nil {
 			return fmt.Errorf("starting VM: %w", err)
 		}
@@ -165,16 +201,17 @@ var createCmd = &cobra.Command{
 			}
 		})
 
-		progress(14, totalSteps, "Waiting for SSH (up to 120s)")
-		ip, err := waitForIP(name, 60*time.Second)
-		if err != nil {
+		progress(16, totalSteps, "Waiting for SSH (up to 120s)")
+		// waitForIP confirms DHCP completed; the VM receives the reserved IP, so
+		// we SSH to and persist the address we allocated rather than re-reading it.
+		if _, err := waitForIP(name, 60*time.Second); err != nil {
 			return err
 		}
 		if err := vm.WaitForSSH(ip, privPath, cfg.VMUser, 120*time.Second); err != nil {
 			return fmt.Errorf("waiting for SSH: %w", err)
 		}
 
-		progress(15, totalSteps, "Saving instance state")
+		progress(17, totalSteps, "Saving instance state")
 		if err := state.Save(dir, name, &state.InstanceState{
 			Name:             name,
 			CreatedAt:        time.Now(),
@@ -185,6 +222,8 @@ var createCmd = &cobra.Command{
 			OverlayName:      overlayName,
 			DataDiskName:     dataName,
 			CloudInitISO:     isoPath,
+			MAC:              mac,
+			IP:               ip,
 		}); err != nil {
 			return fmt.Errorf("saving state: %w", err)
 		}
