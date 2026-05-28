@@ -1,0 +1,20 @@
+version: 2
+
+updates:
+  # Keeps SHA-pinned action versions current; rewrites the trailing "# vX.Y.Z"
+  # comment on each bump so the pin stays auditable.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: friday
+      time: "13:00"
+      timezone: Europe/Berlin
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: friday
+      time: "13:00"
+      timezone: Europe/Berlin
