@@ -1,3 +1,6 @@
+# Recipes use `set -o pipefail` (bash-only); CI runners default /bin/sh to dash.
+SHELL       := /bin/bash
+
 APP_NAME    := motoko
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 DIST_DIR    := dist
