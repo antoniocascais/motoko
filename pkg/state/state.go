@@ -19,6 +19,8 @@ type InstanceState struct {
 	OverlayName      string    `json:"overlay_name"`
 	DataDiskName     string    `json:"data_disk_name"`
 	CloudInitISO     string    `json:"cloudinit_iso"`
+	MAC              string    `json:"mac,omitempty"`
+	IP               string    `json:"ip,omitempty"`
 }
 
 func stateDir(configDir, name string) string {
