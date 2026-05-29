@@ -92,7 +92,7 @@ var rebuildCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := vm.WaitForSSH(ip, st.SSHKeyPath, cfg.VMUser, 120*time.Second); err != nil {
+		if err := vm.WaitForSSHReady(ip, st.SSHKeyPath, cfg.VMUser, name, 120*time.Second); err != nil {
 			return err
 		}
 
