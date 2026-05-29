@@ -12,10 +12,10 @@ import (
 // ---------- sshArgs ----------
 
 func TestSSHArgs_BuildsExpectedArguments(t *testing.T) {
-	got := sshArgs("/keys/id_ed25519", "claude", "192.168.122.10")
+	got := sshArgs("/keys/id_ed25519", "claude", "192.168.122.10", "/cfg/instances/foo/known_hosts")
 	want := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "UserKnownHostsFile=/cfg/instances/foo/known_hosts",
 		"-i", "/keys/id_ed25519",
 		"claude@192.168.122.10",
 	}
@@ -31,12 +31,55 @@ func TestSSHArgs_BuildsExpectedArguments(t *testing.T) {
 
 func TestSSHArgs_EmptyKeyAndUser(t *testing.T) {
 	// Documents behavior: no validation, empty strings flow through.
-	got := sshArgs("", "", "10.0.0.1")
+	got := sshArgs("", "", "10.0.0.1", "/kh")
 	if got[5] != "" {
 		t.Errorf("expected empty key path, got %q", got[5])
 	}
 	if got[6] != "@10.0.0.1" {
 		t.Errorf("expected '@10.0.0.1' with empty user, got %q", got[6])
+	}
+}
+
+// ---------- pinHostKeys ----------
+
+func TestPinHostKeys_WritesFileWithContent(t *testing.T) {
+	dir := t.TempDir()
+	const content = "192.168.122.5 ssh-ed25519 AAAA\n"
+
+	khPath, err := pinHostKeys(dir, "vm1", content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Returns the per-instance known_hosts path.
+	if want := filepath.Join(dir, "instances", "vm1", "known_hosts"); khPath != want {
+		t.Errorf("path = %q, want %q", khPath, want)
+	}
+	// Content written verbatim.
+	data, err := os.ReadFile(khPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != content {
+		t.Errorf("content = %q, want %q", string(data), content)
+	}
+	// Locked down to 0600.
+	info, err := os.Stat(khPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("perm = %o, want 0600", perm)
+	}
+}
+
+func TestPinHostKeys_MkdirErrorPropagates(t *testing.T) {
+	dir := t.TempDir()
+	// Make instances/ a regular file so MkdirAll(instances/vm1) fails.
+	if err := os.WriteFile(filepath.Join(dir, "instances"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pinHostKeys(dir, "vm1", "key\n"); err == nil {
+		t.Fatal("expected error when the instance dir cannot be created")
 	}
 }
 

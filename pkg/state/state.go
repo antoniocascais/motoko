@@ -31,6 +31,12 @@ func statePath(configDir, name string) string {
 	return filepath.Join(stateDir(configDir, name), "state.json")
 }
 
+// KnownHostsPath returns the per-instance SSH known_hosts file. It lives inside
+// the instance state dir so Delete removes it along with the rest of the state.
+func KnownHostsPath(configDir, name string) string {
+	return filepath.Join(stateDir(configDir, name), "known_hosts")
+}
+
 func Save(configDir, name string, s *InstanceState) error {
 	dir := stateDir(configDir, name)
 	if err := os.MkdirAll(dir, 0700); err != nil {

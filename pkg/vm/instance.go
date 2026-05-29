@@ -191,17 +191,25 @@ func GetIP(name string) (string, error) {
 var sleepFn = time.Sleep
 
 // WaitForSSHReady polls until the VM answers SSH and reports the expected
-// hostname, or the timeout is reached. expectedHostname is the bare instance
-// name — cloud-init sets the guest hostname to it. Asserting it proves the box
-// answering on ip is actually this instance: a stale DHCP lease or ARP entry
-// can route SSH to a different VM, which connectivity alone can't catch.
-// Retries on both connection failure and hostname mismatch, since sshd can come
-// up before cloud-init applies the hostname.
-func WaitForSSHReady(ip, keyPath, user, expectedHostname string, timeout time.Duration) error {
+// hostname, then returns its SSH host public keys as known_hosts content keyed
+// by ip. expectedHostname is the bare instance name — cloud-init sets the guest
+// hostname to it. Asserting it proves the box answering on ip is actually this
+// instance: a stale DHCP lease or ARP entry can route SSH to a different VM,
+// which connectivity alone can't catch. Retries on connection failure and
+// hostname mismatch, since sshd can come up before cloud-init applies the
+// hostname.
+//
+// Host keys are captured on this same proving connection (one round-trip does
+// both), so the keys are pinned only once the hostname + key-auth already prove
+// identity — validated TOFU, not blind trust-on-first-use. cloud-init
+// regenerates host keys on every fresh overlay, so rebuild must re-capture.
+func WaitForSSHReady(ip, keyPath, user, expectedHostname string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 
 	for time.Now().Before(deadline) {
+		// The remote command is a constant (no local sh -c, no user-input
+		// interpolation); the glob is expanded by the guest shell.
 		out, _, err := runCmd("ssh",
 			"-o", "ConnectTimeout=2",
 			"-o", "StrictHostKeyChecking=no",
@@ -209,17 +217,24 @@ func WaitForSSHReady(ip, keyPath, user, expectedHostname string, timeout time.Du
 			"-o", "BatchMode=yes",
 			"-i", keyPath,
 			fmt.Sprintf("%s@%s", user, ip),
-			"hostname",
+			"hostname; cat /etc/ssh/ssh_host_*_key.pub",
 		)
-		got := strings.TrimSpace(out)
+		// hostname prints first, then the host keys; split on the first newline.
+		got, keySection, _ := strings.Cut(strings.TrimSpace(out), "\n")
+		got = strings.TrimSpace(got)
 		switch {
 		case err != nil:
 			lastErr = err
-		case got == expectedHostname:
-			return nil
-		default:
+		case got != expectedHostname:
 			lastErr = fmt.Errorf("answered as %q, expected %q (possible wrong VM at %s)",
 				got, expectedHostname, ip)
+		default:
+			knownHosts, kErr := parseHostKeys(keySection, ip)
+			if kErr != nil {
+				lastErr = kErr
+				break
+			}
+			return knownHosts, nil
 		}
 		// Skip the final sleep once the deadline passed — no point waiting 2s
 		// only to fail the loop condition.
@@ -228,7 +243,7 @@ func WaitForSSHReady(ip, keyPath, user, expectedHostname string, timeout time.Du
 		}
 	}
 
-	return fmt.Errorf("VM not ready after %s: %w", timeout, lastErr)
+	return "", fmt.Errorf("VM not ready after %s: %w", timeout, lastErr)
 }
 
 // ListAll returns all motoko-prefixed VMs with their state.

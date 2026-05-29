@@ -163,6 +163,18 @@ func EnsureConfigDir(configDir string) error {
 	return os.MkdirAll(configDir, 0700)
 }
 
+// WriteShellEnv writes a sourceable env file exporting LIBVIRT_DEFAULT_URI so
+// interactive virsh/virt-* debugging targets the system daemon (where motoko's
+// VMs live) instead of the per-user session default. Overwrites — content is
+// motoko-managed and deterministic.
+func WriteShellEnv(path string) error {
+	const content = "export LIBVIRT_DEFAULT_URI=qemu:///system\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		return fmt.Errorf("writing shell env: %w", err)
+	}
+	return nil
+}
+
 func WriteDefaultConfig(configPath string) error {
 	cfg := config.DefaultConfig()
 	data, err := yaml.Marshal(cfg)

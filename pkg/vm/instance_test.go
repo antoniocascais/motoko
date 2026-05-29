@@ -451,16 +451,21 @@ func TestLifecycleActions_Args(t *testing.T) {
 	}
 }
 
-// TestWaitForSSHReady_SSHArgs asserts the poll runs the remote `hostname`
-// command (not `true`) with the hardened ssh options and the per-instance key.
+// TestWaitForSSHReady_SSHArgs asserts the poll runs the combined hostname-assert
+// + host-key capture command with the hardened ssh options and per-instance key,
+// and returns the captured keys as known_hosts content.
 func TestWaitForSSHReady_SSHArgs(t *testing.T) {
 	stubSleep(t)
 	recs := mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
-		return "sandbox", "", nil
+		return "sandbox\nssh-ed25519 AAAA root@h", "", nil
 	})
 
-	if err := WaitForSSHReady("192.168.122.10", "/keys/id_ed25519", "claude", "sandbox", 10*time.Second); err != nil {
+	kh, err := WaitForSSHReady("192.168.122.10", "/keys/id_ed25519", "claude", "sandbox", 10*time.Second)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "192.168.122.10 ssh-ed25519 AAAA\n"; kh != want {
+		t.Errorf("known_hosts = %q, want %q", kh, want)
 	}
 	if len(*recs) != 1 {
 		t.Fatalf("expected 1 call, got %d", len(*recs))
@@ -474,20 +479,20 @@ func TestWaitForSSHReady_SSHArgs(t *testing.T) {
 		"-o BatchMode=yes",
 		"-i /keys/id_ed25519",
 		"claude@192.168.122.10",
-		"hostname",
+		"hostname; cat /etc/ssh/ssh_host_*_key.pub",
 	}
 	for _, want := range wantParts {
 		if !strings.Contains(args, want) {
 			t.Errorf("SSH args missing %q\ngot: %s", want, args)
 		}
 	}
-	if strings.Contains(args, " true") {
-		t.Errorf("remote command should be `hostname`, not `true`\ngot: %s", args)
-	}
 }
 
 func TestWaitForSSHReady(t *testing.T) {
 	const want = "sandbox"
+	// A successful poll returns the hostname on the first line, then host keys.
+	const ok = want + "\nssh-ed25519 AAAA root@h"
+	const wantKH = "192.168.122.10 ssh-ed25519 AAAA\n"
 
 	tests := []struct {
 		name string
@@ -499,8 +504,8 @@ func TestWaitForSSHReady(t *testing.T) {
 		minCalls    int // success path: assert it actually polled this many times
 	}{
 		{
-			name:     "immediate hostname match",
-			respond:  func(int) (string, error) { return want, nil },
+			name:     "immediate hostname match captures keys",
+			respond:  func(int) (string, error) { return ok, nil },
 			timeout:  10 * time.Second,
 			minCalls: 1,
 		},
@@ -510,7 +515,7 @@ func TestWaitForSSHReady(t *testing.T) {
 				if call < 3 {
 					return "localhost", nil // sshd up, hostname not set yet
 				}
-				return want, nil
+				return ok, nil
 			},
 			timeout:  10 * time.Second,
 			minCalls: 3,
@@ -521,16 +526,29 @@ func TestWaitForSSHReady(t *testing.T) {
 				if call < 3 {
 					return "", fmt.Errorf("connection refused")
 				}
-				return want, nil
+				return ok, nil
 			},
 			timeout:  10 * time.Second,
 			minCalls: 3,
 		},
 		{
-			name:     "trims trailing newline before comparing",
-			respond:  func(int) (string, error) { return want + "\n", nil },
+			name:     "trims hostname line before comparing",
+			respond:  func(int) (string, error) { return want + "\r\nssh-ed25519 AAAA root@h", nil },
 			timeout:  10 * time.Second,
 			minCalls: 1,
+		},
+		{
+			// hostname matches but the guest has no host keys yet — must keep
+			// polling, not return an empty pin.
+			name: "retries until host keys are present",
+			respond: func(call int) (string, error) {
+				if call < 3 {
+					return want, nil // hostname set, keys not readable yet
+				}
+				return ok, nil
+			},
+			timeout:  10 * time.Second,
+			minCalls: 3,
 		},
 		{
 			// Failure mode A: never reachable. Error must surface the
@@ -563,7 +581,7 @@ func TestWaitForSSHReady(t *testing.T) {
 				return out, "", err
 			})
 
-			err := WaitForSSHReady("192.168.122.10", "/keys/id_ed25519", "claude", want, tt.timeout)
+			kh, err := WaitForSSHReady("192.168.122.10", "/keys/id_ed25519", "claude", want, tt.timeout)
 
 			if tt.wantErr {
 				if err == nil {
@@ -577,6 +595,9 @@ func TestWaitForSSHReady(t *testing.T) {
 
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+			if kh != wantKH {
+				t.Errorf("known_hosts = %q, want %q", kh, wantKH)
 			}
 			if calls < tt.minCalls {
 				t.Errorf("polled %d times, want >= %d", calls, tt.minCalls)

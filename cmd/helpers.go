@@ -15,6 +15,21 @@ import (
 	"github.com/antoniocascais/motoko/pkg/vm"
 )
 
+// pinHostKeys writes the instance's SSH host keys (captured by WaitForSSHReady on
+// the connection that proves identity) to its per-instance known_hosts file,
+// returning the path. create pins once with rollback on failure; rebuild re-pins
+// to overwrite the keys a fresh overlay regenerated.
+func pinHostKeys(dir, name, knownHosts string) (string, error) {
+	khPath := state.KnownHostsPath(dir, name)
+	if err := os.MkdirAll(filepath.Dir(khPath), 0700); err != nil {
+		return "", fmt.Errorf("creating instance dir: %w", err)
+	}
+	if err := os.WriteFile(khPath, []byte(knownHosts), 0600); err != nil {
+		return "", fmt.Errorf("writing known_hosts: %w", err)
+	}
+	return khPath, nil
+}
+
 func printResults(results []preflight.CheckResult, failLabel string) {
 	for _, r := range results {
 		if r.Passed {
@@ -58,30 +73,35 @@ func waitForIP(name string, timeout time.Duration) (string, error) {
 	return "", fmt.Errorf("no IP address for %q after %s", name, timeout)
 }
 
-// resolveInstance validates a name, loads config+state, and resolves the VM's IP.
-func resolveInstance(name string) (*config.Config, *state.InstanceState, string, error) {
-	if err := cloudinit.ValidateInstanceName(name); err != nil {
-		return nil, nil, "", err
+// resolveInstance validates a name, loads config+state, and resolves the VM's IP
+// and per-instance known_hosts path.
+func resolveInstance(name string) (cfg *config.Config, st *state.InstanceState, ip, knownHosts string, err error) {
+	if err = cloudinit.ValidateInstanceName(name); err != nil {
+		return nil, nil, "", "", err
 	}
-	cfg, err := RequireConfig()
+	cfg, err = RequireConfig()
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", "", err
 	}
-	st, err := state.Load(configDir(), name)
+	st, err = state.Load(configDir(), name)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", "", err
 	}
-	ip, err := vm.GetIP(name)
+	ip, err = vm.GetIP(name)
 	if err != nil || ip == "" {
-		return nil, nil, "", fmt.Errorf("cannot determine IP for instance %q (is it running?)", name)
+		return nil, nil, "", "", fmt.Errorf("cannot determine IP for instance %q (is it running?)", name)
 	}
-	return cfg, st, ip, nil
+	return cfg, st, ip, state.KnownHostsPath(configDir(), name), nil
 }
 
-func sshArgs(keyPath, user, ip string) []string {
+// sshArgs builds the ssh argument list for interactive/non-interactive commands.
+// accept-new pins the host key on first contact (capturing it for pre-feature
+// instances that have no file yet) while still hard-failing on a CHANGED key —
+// the signal that the IP now answers as a different VM.
+func sshArgs(keyPath, user, ip, knownHostsPath string) []string {
 	return []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", fmt.Sprintf("UserKnownHostsFile=%s", knownHostsPath),
 		"-i", keyPath,
 		fmt.Sprintf("%s@%s", user, ip),
 	}

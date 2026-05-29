@@ -22,7 +22,7 @@ var rebuildCmd = &cobra.Command{
 		if err := cloudinit.ValidateInstanceName(name); err != nil {
 			return err
 		}
-		const totalSteps = 7
+		const totalSteps = 8
 
 		cfg, err := RequireConfig()
 		if err != nil {
@@ -62,6 +62,11 @@ var rebuildCmd = &cobra.Command{
 		if err := vm.ResetOverlay(cfg.ImagesDir, cfg.GoldenImage.Name, st.OverlayName); err != nil {
 			return err
 		}
+		// The fresh overlay regenerates the guest host keys, invalidating the old
+		// pin. Drop it now so any failure before the re-pin leaves no stale
+		// known_hosts to hard-fail later `motoko ssh` with HOST KEY CHANGED —
+		// accept-new re-pins on the next connection instead.
+		warnRemove(state.KnownHostsPath(dir, name))
 
 		progress(5, totalSteps, "Rebuilding cloud-init ISO")
 		pubkey, _, err := cloudinit.LoadInstanceKey(dir, name)
@@ -92,7 +97,13 @@ var rebuildCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := vm.WaitForSSHReady(ip, st.SSHKeyPath, cfg.VMUser, name, 120*time.Second); err != nil {
+		knownHosts, err := vm.WaitForSSHReady(ip, st.SSHKeyPath, cfg.VMUser, name, 120*time.Second)
+		if err != nil {
+			return err
+		}
+
+		progress(8, totalSteps, "Re-pinning SSH host keys")
+		if _, err := pinHostKeys(dir, name, knownHosts); err != nil {
 			return err
 		}
 
