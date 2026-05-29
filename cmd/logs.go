@@ -12,12 +12,12 @@ var logsCmd = &cobra.Command{
 	Short: "Show Claude Code output from the instance",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, st, ip, err := resolveInstance(args[0])
+		cfg, st, ip, knownHosts, err := resolveInstance(args[0])
 		if err != nil {
 			return err
 		}
 
-		argv := append(sshArgs(st.SSHKeyPath, cfg.VMUser, ip),
+		argv := append(sshArgs(st.SSHKeyPath, cfg.VMUser, ip, knownHosts),
 			"tmux", "capture-pane", "-p", "-t", "claude", "-S", "-100",
 		)
 		c := exec.Command("ssh", argv...)

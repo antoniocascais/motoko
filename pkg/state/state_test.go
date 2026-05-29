@@ -280,6 +280,33 @@ func TestStatePath_PathConstruction(t *testing.T) {
 	}
 }
 
+func TestKnownHostsPath_PathConstruction(t *testing.T) {
+	got := KnownHostsPath("/base", "myvm")
+	want := filepath.Join("/base", "instances", "myvm", "known_hosts")
+	if got != want {
+		t.Errorf("KnownHostsPath = %q, want %q", got, want)
+	}
+}
+
+func TestKnownHostsPath_InsideDeletedDir(t *testing.T) {
+	// The pin must live inside the dir Delete removes, so destroy cleans it up
+	// without any extra logic.
+	dir := t.TempDir()
+	if err := Save(dir, "myvm", testState()); err != nil {
+		t.Fatal(err)
+	}
+	kh := KnownHostsPath(dir, "myvm")
+	if err := os.WriteFile(kh, []byte("192.168.122.1 ssh-ed25519 AAAA\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Delete(dir, "myvm"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(kh); !os.IsNotExist(err) {
+		t.Error("known_hosts should be removed by Delete")
+	}
+}
+
 func TestSave_ErrorMessage(t *testing.T) {
 	// Write to an impossible path to trigger mkdir error
 	_, err := Load("/nonexistent/deep/path", "vm")

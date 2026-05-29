@@ -34,6 +34,14 @@ var initCmd = &cobra.Command{
 
 		fmt.Fprintf(os.Stderr, "\nConfig: %s\n", cfgPath)
 
+		envPath := filepath.Join(dir, "env")
+		if err := preflight.WriteShellEnv(envPath); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Shell env: %s\n", envPath)
+		fmt.Fprintf(os.Stderr, "  For interactive virsh/virt-* debugging, source it in your shell rc:\n")
+		fmt.Fprintf(os.Stderr, "    source %s\n", envPath)
+
 		cfg, err := config.Load(cfgPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  [SKIP] config path checks: %v\n", err)

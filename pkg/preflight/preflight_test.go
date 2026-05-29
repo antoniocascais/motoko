@@ -455,6 +455,59 @@ func TestWriteDefaultConfig_DoesNotOverwrite(t *testing.T) {
 	}
 }
 
+func TestWriteShellEnv_ContentAndPerms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "env")
+	if err := WriteShellEnv(path); err != nil {
+		t.Fatalf("WriteShellEnv() error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "export LIBVIRT_DEFAULT_URI=qemu:///system\n" {
+		t.Errorf("content = %q", string(data))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("perm = %o, want 0600", perm)
+	}
+}
+
+func TestWriteShellEnv_Overwrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "env")
+	if err := os.WriteFile(path, []byte("stale\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteShellEnv(path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "stale") {
+		t.Errorf("expected overwrite, got %q", string(data))
+	}
+}
+
+func TestWriteShellEnv_WriteErrorWrapped(t *testing.T) {
+	// Parent path is a file, not a dir → os.WriteFile fails.
+	base := filepath.Join(t.TempDir(), "notadir")
+	if err := os.WriteFile(base, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := WriteShellEnv(filepath.Join(base, "env"))
+	if err == nil {
+		t.Fatal("expected error writing under a non-directory")
+	}
+	if !strings.Contains(err.Error(), "writing shell env") {
+		t.Errorf("error = %q, want 'writing shell env' prefix", err)
+	}
+}
+
 func TestWriteDefaultConfig_FilePermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yml")

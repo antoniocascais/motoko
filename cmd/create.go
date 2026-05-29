@@ -24,7 +24,7 @@ var createCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		const totalSteps = 17
+		const totalSteps = 18
 
 		// Cleanup stack: on failure, roll back side effects in reverse order.
 		// Cleared on success after state.Save.
@@ -207,11 +207,22 @@ var createCmd = &cobra.Command{
 		if _, err := waitForIP(name, 60*time.Second); err != nil {
 			return err
 		}
-		if err := vm.WaitForSSHReady(ip, privPath, cfg.VMUser, name, 120*time.Second); err != nil {
+		knownHosts, err := vm.WaitForSSHReady(ip, privPath, cfg.VMUser, name, 120*time.Second)
+		if err != nil {
 			return fmt.Errorf("waiting for SSH: %w", err)
 		}
 
-		progress(17, totalSteps, "Saving instance state")
+		progress(17, totalSteps, "Pinning SSH host keys")
+		khPath, err := pinHostKeys(dir, name, knownHosts)
+		if err != nil {
+			return err
+		}
+		cleanups = append(cleanups, func() {
+			fmt.Fprintf(os.Stderr, "Rollback: removing %s\n", khPath)
+			warnRemove(khPath)
+		})
+
+		progress(18, totalSteps, "Saving instance state")
 		if err := state.Save(dir, name, &state.InstanceState{
 			Name:             name,
 			CreatedAt:        time.Now(),

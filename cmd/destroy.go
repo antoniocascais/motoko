@@ -90,6 +90,7 @@ var destroyCmd = &cobra.Command{
 			}
 		}
 
+		// Removes the whole instances/<name>/ dir, including the pinned known_hosts.
 		if err := state.Delete(dir, name); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: removing state: %v\n", err)
 		}

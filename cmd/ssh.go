@@ -14,7 +14,7 @@ var sshCmd = &cobra.Command{
 	Short: "Open an SSH session to an instance",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, st, ip, err := resolveInstance(args[0])
+		cfg, st, ip, knownHosts, err := resolveInstance(args[0])
 		if err != nil {
 			return err
 		}
@@ -24,7 +24,7 @@ var sshCmd = &cobra.Command{
 			return fmt.Errorf("ssh not found in PATH")
 		}
 
-		argv := append([]string{"ssh"}, sshArgs(st.SSHKeyPath, cfg.VMUser, ip)...)
+		argv := append([]string{"ssh"}, sshArgs(st.SSHKeyPath, cfg.VMUser, ip, knownHosts)...)
 		return syscall.Exec(sshBin, argv, os.Environ())
 	},
 }
