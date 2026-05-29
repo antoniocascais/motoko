@@ -187,29 +187,48 @@ func GetIP(name string) (string, error) {
 	return parseIPFromDomifaddr(stdout), nil
 }
 
-// WaitForSSH polls until an SSH connection succeeds or timeout is reached.
-func WaitForSSH(ip, keyPath, user string, timeout time.Duration) error {
+// sleepFn is the inter-poll delay, a package var so tests can stub it out.
+var sleepFn = time.Sleep
+
+// WaitForSSHReady polls until the VM answers SSH and reports the expected
+// hostname, or the timeout is reached. expectedHostname is the bare instance
+// name — cloud-init sets the guest hostname to it. Asserting it proves the box
+// answering on ip is actually this instance: a stale DHCP lease or ARP entry
+// can route SSH to a different VM, which connectivity alone can't catch.
+// Retries on both connection failure and hostname mismatch, since sshd can come
+// up before cloud-init applies the hostname.
+func WaitForSSHReady(ip, keyPath, user, expectedHostname string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 
 	for time.Now().Before(deadline) {
-		_, _, err := runCmd("ssh",
+		out, _, err := runCmd("ssh",
 			"-o", "ConnectTimeout=2",
 			"-o", "StrictHostKeyChecking=no",
 			"-o", "UserKnownHostsFile=/dev/null",
 			"-o", "BatchMode=yes",
 			"-i", keyPath,
 			fmt.Sprintf("%s@%s", user, ip),
-			"true",
+			"hostname",
 		)
-		if err == nil {
+		got := strings.TrimSpace(out)
+		switch {
+		case err != nil:
+			lastErr = err
+		case got == expectedHostname:
 			return nil
+		default:
+			lastErr = fmt.Errorf("answered as %q, expected %q (possible wrong VM at %s)",
+				got, expectedHostname, ip)
 		}
-		lastErr = err
-		time.Sleep(2 * time.Second)
+		// Skip the final sleep once the deadline passed — no point waiting 2s
+		// only to fail the loop condition.
+		if time.Now().Before(deadline) {
+			sleepFn(2 * time.Second)
+		}
 	}
 
-	return fmt.Errorf("SSH not ready after %s: %w", timeout, lastErr)
+	return fmt.Errorf("VM not ready after %s: %w", timeout, lastErr)
 }
 
 // ListAll returns all motoko-prefixed VMs with their state.

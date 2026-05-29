@@ -451,14 +451,17 @@ func TestLifecycleActions_Args(t *testing.T) {
 	}
 }
 
-func TestWaitForSSH_ImmediateSuccess(t *testing.T) {
-	recs := mockRunner(t)
+// TestWaitForSSHReady_SSHArgs asserts the poll runs the remote `hostname`
+// command (not `true`) with the hardened ssh options and the per-instance key.
+func TestWaitForSSHReady_SSHArgs(t *testing.T) {
+	stubSleep(t)
+	recs := mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
+		return "sandbox", "", nil
+	})
 
-	err := WaitForSSH("192.168.122.10", "/keys/id_ed25519", "claude", 10*time.Second)
-	if err != nil {
+	if err := WaitForSSHReady("192.168.122.10", "/keys/id_ed25519", "claude", "sandbox", 10*time.Second); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 	if len(*recs) != 1 {
 		t.Fatalf("expected 1 call, got %d", len(*recs))
 	}
@@ -471,45 +474,114 @@ func TestWaitForSSH_ImmediateSuccess(t *testing.T) {
 		"-o BatchMode=yes",
 		"-i /keys/id_ed25519",
 		"claude@192.168.122.10",
-		"true",
+		"hostname",
 	}
 	for _, want := range wantParts {
 		if !strings.Contains(args, want) {
 			t.Errorf("SSH args missing %q\ngot: %s", want, args)
 		}
 	}
-}
-
-func TestWaitForSSH_Timeout(t *testing.T) {
-	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
-		return "", "", fmt.Errorf("connection refused")
-	})
-
-	err := WaitForSSH("192.168.122.10", "/keys/id_ed25519", "claude", 1*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected timeout error")
-	}
-	if !strings.Contains(err.Error(), "SSH not ready") {
-		t.Errorf("error = %q, want mention of 'SSH not ready'", err.Error())
+	if strings.Contains(args, " true") {
+		t.Errorf("remote command should be `hostname`, not `true`\ngot: %s", args)
 	}
 }
 
-func TestWaitForSSH_SucceedsOnRetry(t *testing.T) {
-	callCount := 0
-	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
-		callCount++
-		if callCount < 3 {
-			return "", "", fmt.Errorf("connection refused")
-		}
-		return "", "", nil
-	})
+func TestWaitForSSHReady(t *testing.T) {
+	const want = "sandbox"
 
-	err := WaitForSSH("192.168.122.10", "/keys/id_ed25519", "claude", 30*time.Second)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	tests := []struct {
+		name string
+		// respond returns the ssh stdout + error for the Nth poll (1-based).
+		respond     func(call int) (string, error)
+		timeout     time.Duration
+		wantErr     bool
+		errContains string
+		minCalls    int // success path: assert it actually polled this many times
+	}{
+		{
+			name:     "immediate hostname match",
+			respond:  func(int) (string, error) { return want, nil },
+			timeout:  10 * time.Second,
+			minCalls: 1,
+		},
+		{
+			name: "succeeds once cloud-init applies hostname",
+			respond: func(call int) (string, error) {
+				if call < 3 {
+					return "localhost", nil // sshd up, hostname not set yet
+				}
+				return want, nil
+			},
+			timeout:  10 * time.Second,
+			minCalls: 3,
+		},
+		{
+			name: "succeeds after connection refused retries",
+			respond: func(call int) (string, error) {
+				if call < 3 {
+					return "", fmt.Errorf("connection refused")
+				}
+				return want, nil
+			},
+			timeout:  10 * time.Second,
+			minCalls: 3,
+		},
+		{
+			name:     "trims trailing newline before comparing",
+			respond:  func(int) (string, error) { return want + "\n", nil },
+			timeout:  10 * time.Second,
+			minCalls: 1,
+		},
+		{
+			// Failure mode A: never reachable. Error must surface the
+			// connectivity cause, NOT a spurious hostname mismatch.
+			name:        "timeout when never reachable reports connectivity",
+			respond:     func(int) (string, error) { return "", fmt.Errorf("connection refused") },
+			timeout:     1 * time.Millisecond,
+			wantErr:     true,
+			errContains: "connection refused",
+		},
+		{
+			// Failure mode B: reachable but the wrong box answers. This is
+			// the whole reason WaitForSSHReady exists over a connectivity
+			// poll — it must FAIL loudly, naming the mismatch, never succeed.
+			name:        "timeout when wrong VM answers reports mismatch",
+			respond:     func(int) (string, error) { return "otherbox", nil },
+			timeout:     1 * time.Millisecond,
+			wantErr:     true,
+			errContains: `answered as "otherbox", expected "sandbox" (possible wrong VM at 192.168.122.10)`,
+		},
 	}
-	if callCount < 3 {
-		t.Errorf("expected at least 3 attempts, got %d", callCount)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubSleep(t)
+			calls := 0
+			mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
+				calls++
+				out, err := tt.respond(calls)
+				return out, "", err
+			})
+
+			err := WaitForSSHReady("192.168.122.10", "/keys/id_ed25519", "claude", want, tt.timeout)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil after %d calls", calls)
+				}
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error = %q, want substring %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if calls < tt.minCalls {
+				t.Errorf("polled %d times, want >= %d", calls, tt.minCalls)
+			}
+		})
 	}
 }
 

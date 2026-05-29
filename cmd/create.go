@@ -207,7 +207,7 @@ var createCmd = &cobra.Command{
 		if _, err := waitForIP(name, 60*time.Second); err != nil {
 			return err
 		}
-		if err := vm.WaitForSSH(ip, privPath, cfg.VMUser, 120*time.Second); err != nil {
+		if err := vm.WaitForSSHReady(ip, privPath, cfg.VMUser, name, 120*time.Second); err != nil {
 			return fmt.Errorf("waiting for SSH: %w", err)
 		}
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 type execRecord struct {
@@ -35,6 +36,15 @@ func mockRunnerWithFunc(t *testing.T, fn runFunc) *[]execRecord {
 	}
 	t.Cleanup(func() { runCmd = original })
 	return &records
+}
+
+// stubSleep replaces sleepFn with a no-op so poll loops don't burn wall-clock.
+// Original is restored via t.Cleanup.
+func stubSleep(t *testing.T) {
+	t.Helper()
+	orig := sleepFn
+	sleepFn = func(time.Duration) {}
+	t.Cleanup(func() { sleepFn = orig })
 }
 
 // roundTripFunc adapts a function to http.RoundTripper for test transport injection.
