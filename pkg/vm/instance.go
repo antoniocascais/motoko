@@ -279,6 +279,95 @@ func DisableAutostart(name string) error {
 	return err
 }
 
+// BlockDevice represents a single disk attached to a VM, as reported by
+// `virsh domblklist`. DeviceType is "disk" or "cdrom"; Source is the host
+// absolute path (empty when libvirt reports no media in a cdrom slot).
+type BlockDevice struct {
+	Target     string
+	Source     string
+	DeviceType string
+}
+
+// DumpXML returns the raw libvirt domain XML for the instance. Used by
+// `motoko backup` to capture the VM definition (disks, RAM, vCPUs, memtune).
+func DumpXML(name string) (string, error) {
+	stdout, _, err := runCmd("virsh", libvirtArgs("dumpxml", libvirtName(name))...)
+	if err != nil {
+		return "", fmt.Errorf("dumpxml: %w", err)
+	}
+	return stdout, nil
+}
+
+// BlockDevices lists all block devices attached to the instance. The source
+// paths are absolute (libvirt stores them so) — backup uses this to discover
+// the data disk and cloud-init ISO without depending on naming conventions.
+func BlockDevices(name string) ([]BlockDevice, error) {
+	stdout, _, err := runCmd("virsh", libvirtArgs("domblklist", libvirtName(name))...)
+	if err != nil {
+		return nil, fmt.Errorf("domblklist: %w", err)
+	}
+	return parseDomblklist(stdout), nil
+}
+
+// CopyDataDiskQEMU copies a qcow2 image to dst using `qemu-img convert -U`
+// (force shared read lock). The -U is required while a VM holds the qcow2
+// lock on src; without it qemu-img fails with "Failed to get shared
+// 'consistent read' lock". For a shut-off VM the flag is a harmless no-op,
+// so backup always uses it.
+func CopyDataDiskQEMU(src, dst string) error {
+	_, _, err := runCmd("qemu-img", "convert", "-U", "-O", "qcow2", src, dst)
+	return err
+}
+
+// CheckQCOW2 runs `qemu-img check` on path and returns the error from qemu-img
+// (which prints diagnostics to stderr and exits non-zero on corruption).
+// Backup runs this against the data-disk copy to fail fast on a bad image
+// rather than silently producing a broken snapshot.
+func CheckQCOW2(path string) error {
+	_, _, err := runCmd("qemu-img", "check", path)
+	return err
+}
+
+// parseDomblklist extracts block devices from `virsh domblklist` output.
+// The default (non-`--details`) form is:
+//
+//	 Target   Source
+//	---------------------------------------------------
+//	 vda      /var/lib/libvirt/images/.../overlay.qcow2
+//	 vdb      /var/lib/libvirt/images/.../data.qcow2
+//	 vdc      /var/lib/libvirt/cloud-init/.../cidata.iso
+//
+// We pick the first whitespace-separated field that contains a "/" as the
+// source path, so any future column reordering in libvirt's output doesn't
+// break the parser. The "disk/cdrom" type distinction is dropped: libvirt
+// reports "file" on some versions and "block" on others, neither useful for
+// backup — the data disk is identified by caller-side cross-reference with
+// the path stored in instance state.
+func parseDomblklist(output string) []BlockDevice {
+	var devs []BlockDevice
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		target := fields[0]
+		// Pick the first path-shaped field. If none, the line is a header
+		// ("Target  Source") or a row with no media (empty cdrom).
+		var source string
+		for _, f := range fields[1:] {
+			if strings.HasPrefix(f, "/") {
+				source = f
+				break
+			}
+		}
+		if source == "" {
+			continue
+		}
+		devs = append(devs, BlockDevice{Target: target, Source: source})
+	}
+	return devs
+}
+
 // parseMACFromDomiflist extracts the MAC address from virsh domiflist output.
 // Mirrors: awk 'NR>2 && NF{print $5; exit}'
 func parseMACFromDomiflist(output string) string {
