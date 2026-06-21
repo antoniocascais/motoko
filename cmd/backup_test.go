@@ -19,6 +19,21 @@ import (
 
 // ---------- test fixtures ----------
 
+// standardDevs returns the list of block devices a healthy motoko VM
+// reports: a vda root overlay, a vdb data disk, and a vdc cdrom ISO. The
+// paths are derived from the same images/cloud-init dirs the fixture set up.
+// Tests pass a name (matching the fixture) to pin the device list to the
+// specific instance.
+func standardDevs(cloudinitDir, imagesDir, name string) []vm.BlockDevice {
+	dataDisk := filepath.Join(imagesDir, "motoko-"+name+"-data.qcow2")
+	iso := filepath.Join(cloudinitDir, "motoko-"+name+"-cloud-init.iso")
+	return []vm.BlockDevice{
+		{Target: "vda", Source: filepath.Join(imagesDir, "motoko-"+name+"-overlay.qcow2")},
+		{Target: "vdb", Source: dataDisk},
+		{Target: "vdc", Source: iso},
+	}
+}
+
 // setupBackupFixture creates a temp dir pre-populated with: a config.yml
 // pointing at images/ and cloud-init/ subdirs, a state.json for the instance,
 // and a real ed25519 keypair. Returns the config dir, instance name, and a
@@ -251,11 +266,7 @@ func TestBackup_ShutOff_NoTarball(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	devs := []vm.BlockDevice{
-		{Target: "vda", Source: filepath.Join(imagesDir, "motoko-test-overlay.qcow2")},
-		{Target: "vdb", Source: dataPath},
-		{Target: "vdc", Source: filepath.Join(cloudinitDir, "motoko-test-cloud-init.iso")},
-	}
+	devs := standardDevs(cloudinitDir, imagesDir, "test")
 	calls := stubBackupWith(t, "test", "shut off", "<domain/>", devs, "")
 
 	outDir := filepath.Join(t.TempDir(), "out")
@@ -295,9 +306,7 @@ func TestBackup_Running_PullsTarball(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cloudinitDir, "motoko-test-cloud-init.iso"), []byte("iso"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	devs := []vm.BlockDevice{
-		{Target: "vdb", Source: dataPath},
-	}
+	devs := standardDevs(cloudinitDir, imagesDir, "test")
 	calls := stubBackupWith(t, "test", "running", "<domain/>", devs, "192.168.122.50")
 
 	// Suppress the interactive confirmation by passing -y.
@@ -354,7 +363,7 @@ func TestBackup_Running_ConfirmYesProceeds(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cloudinitDir, "motoko-test-cloud-init.iso"), []byte("iso"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	devs := []vm.BlockDevice{{Target: "vdb", Source: dataPath}}
+	devs := standardDevs(cloudinitDir, imagesDir, "test")
 	stubBackupWith(t, "test", "running", "<domain/>", devs, "192.168.122.50")
 	withStdin(t, "y\n")
 
@@ -365,6 +374,35 @@ func TestBackup_Running_ConfirmYesProceeds(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "data-disk.qcow2")); err != nil {
 		t.Errorf("data-disk.qcow2 should exist after confirmation, got: %v", err)
+	}
+}
+
+// ---------- ISO not attached ----------
+
+func TestBackup_CloudInitISONotAttached_Fails(t *testing.T) {
+	_, imagesDir, _ := setupBackupFixture(t, "iso")
+	// Only the data disk in the dev list — no cdrom. (The image dir
+	// entries are still created on disk so the data-disk copy step has
+	// something to read, but we omit the ISO from domblklist to force
+	// the failure path.)
+	dataPath := filepath.Join(imagesDir, "motoko-iso-data.qcow2")
+	if err := os.WriteFile(dataPath, []byte("fake qcow2"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	devs := []vm.BlockDevice{{Target: "vdb", Source: dataPath}}
+	stubBackupWith(t, "iso", "shut off", "<domain/>", devs, "")
+
+	outDir := filepath.Join(t.TempDir(), "out")
+	setBackupFlags(t, outDir, false)
+	err := runBackup(t, "iso")
+	if err == nil {
+		t.Fatal("expected error when ISO is not attached")
+	}
+	if !strings.Contains(err.Error(), "cloud-init ISO") {
+		t.Errorf("error = %q, want mention of 'cloud-init ISO'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "not attached") {
+		t.Errorf("error = %q, want 'not attached'", err.Error())
 	}
 }
 
@@ -406,7 +444,7 @@ func TestBackup_QemuImgCheckFailure_RemovesCopy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cloudinitDir, "motoko-test-cloud-init.iso"), []byte("iso"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	devs := []vm.BlockDevice{{Target: "vdb", Source: dataPath}}
+	devs := standardDevs(cloudinitDir, imagesDir, "test")
 
 	// Override check to fail.
 	calls := stubBackupWith(t, "test", "shut off", "<domain/>", devs, "")
@@ -448,7 +486,7 @@ func TestBackup_SSHTarFailure_DegradedButNotAborted(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cloudinitDir, "motoko-test-cloud-init.iso"), []byte("iso"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	devs := []vm.BlockDevice{{Target: "vdb", Source: dataPath}}
+	devs := standardDevs(cloudinitDir, imagesDir, "test")
 
 	calls := stubBackupWith(t, "test", "running", "<domain/>", devs, "192.168.122.50")
 	// Override the SSH tar seam to return an error.
@@ -492,7 +530,7 @@ func TestBackup_FilePermissions(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cloudinitDir, "motoko-perms-cloud-init.iso"), []byte("iso"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	devs := []vm.BlockDevice{{Target: "vdb", Source: dataPath}}
+	devs := standardDevs(cloudinitDir, imagesDir, "perms")
 	stubBackupWith(t, "perms", "shut off", "<domain/>", devs, "")
 
 	// Pin HOME so any code path that bypasses --output is still predictable.
@@ -543,7 +581,7 @@ func TestBackup_CustomOutput(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cloudinitDir, "motoko-custom-cloud-init.iso"), []byte("iso"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	devs := []vm.BlockDevice{{Target: "vdb", Source: dataPath}}
+	devs := standardDevs(cloudinitDir, imagesDir, "custom")
 	stubBackupWith(t, "custom", "shut off", "<domain/>", devs, "")
 
 	custom := filepath.Join(t.TempDir(), "mybackup")
@@ -568,7 +606,7 @@ func TestBackup_DefaultOutput_UnderMotokoBackups(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cloudinitDir, "motoko-def-cloud-init.iso"), []byte("iso"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	devs := []vm.BlockDevice{{Target: "vdb", Source: dataPath}}
+	devs := standardDevs(cloudinitDir, imagesDir, "def")
 	stubBackupWith(t, "def", "shut off", "<domain/>", devs, "")
 
 	// Pin HOME to a temp dir so the default output is predictable.
@@ -821,7 +859,7 @@ func TestBackup_WritesRestoreReadme(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cloudinitDir, "motoko-readme-cloud-init.iso"), []byte("iso"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	devs := []vm.BlockDevice{{Target: "vdb", Source: dataPath}}
+	devs := standardDevs(cloudinitDir, imagesDir, "readme")
 	stubBackupWith(t, "readme", "shut off", "<domain/>", devs, "")
 
 	outDir := filepath.Join(t.TempDir(), "out")
@@ -852,7 +890,7 @@ func TestBackup_RunningReadmeMentionsTarball(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cloudinitDir, "motoko-rm2-cloud-init.iso"), []byte("iso"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	devs := []vm.BlockDevice{{Target: "vdb", Source: dataPath}}
+	devs := standardDevs(cloudinitDir, imagesDir, "rm2")
 	stubBackupWith(t, "rm2", "running", "<domain/>", devs, "192.168.122.10")
 
 	outDir := filepath.Join(t.TempDir(), "out")

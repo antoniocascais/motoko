@@ -107,9 +107,14 @@ holds the Telegram bot token and the keys directory holds an SSH private key.`,
 			return err
 		}
 
-		// 2. Discover the data-disk source path from libvirt, not from naming
-		// conventions. The data disk is the qcow2 in cfg.ImagesDir whose name
-		// matches st.DataDiskName; the overlay and ISO are explicitly excluded.
+		// 2. Discover the data-disk and cloud-init-ISO source paths from
+		// `virsh domblklist`, not from naming conventions. The state file
+		// stores what we EXPECT the data disk and ISO to be; libvirt's
+		// domblklist tells us what's ACTUALLY attached. Cross-referencing
+		// catches a state/libvirt drift (operator manually reattached a
+		// disk, libvirt was reloaded, etc.) before we silently back up the
+		// wrong thing. The overlay is also in the list — we explicitly skip
+		// it by not asking for it.
 		fmt.Fprintln(os.Stderr, "==> Discovering block devices")
 		devs, err := backupBlockDevicesFn(name)
 		if err != nil {
@@ -122,6 +127,13 @@ holds the Telegram bot token and the keys directory holds an SSH private key.`,
 		}
 		if isCDROM(dataSrc) {
 			return fmt.Errorf("data disk %q resolved to a cdrom device — refusing to copy a cdrom as a disk", dataSrc.Source)
+		}
+		isoSrc, ok := findBlockDevice(devs, st.CloudInitISO)
+		if !ok {
+			return fmt.Errorf("cloud-init ISO %q not attached to VM %q (run `virsh domblklist motoko-%s` to inspect)", st.CloudInitISO, name, name)
+		}
+		if !isCDROM(isoSrc) {
+			return fmt.Errorf("cloud-init ISO %q is not attached as a cdrom — refusing to copy", isoSrc.Source)
 		}
 
 		// 3. Copy + verify the data disk. -U is mandatory while the VM is
@@ -147,13 +159,15 @@ holds the Telegram bot token and the keys directory holds an SSH private key.`,
 		}
 
 		// 4. Cloud-init ISO. Contains the Telegram bot token — keep it under
-		// the same 0600 regime as the keys.
+		// the same 0600 regime as the keys. Source path is the libvirt-
+		// reported one, not state-stored, so a state/libvirt drift can't
+		// route the ISO copy to the wrong place.
 		fmt.Fprintln(os.Stderr, "==> Copying cloud-init ISO")
-		isoBytes, err := os.ReadFile(st.CloudInitISO)
+		isoBytes, err := os.ReadFile(isoSrc.Source)
 		if err != nil {
 			return fmt.Errorf("reading cloud-init ISO: %w", err)
 		}
-		isoDst := filepath.Join(outDir, filepath.Base(st.CloudInitISO))
+		isoDst := filepath.Join(outDir, filepath.Base(isoSrc.Source))
 		if err := writeSecretFile(isoDst, isoBytes); err != nil {
 			return err
 		}
