@@ -218,9 +218,9 @@ func TestApplyTuning_SkipsNetIfNoMAC(t *testing.T) {
 
 func TestParseMACFromDomiflist(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		want   string
+		name  string
+		input string
+		want  string
 	}{
 		{
 			name: "standard output",
@@ -358,7 +358,6 @@ func TestListAll_FiltersByPrefix(t *testing.T) {
 		t.Errorf("vms[1].IP = %q, want empty", vms[1].IP)
 	}
 }
-
 
 func TestLibvirtCommands_IncludeConnectFlag(t *testing.T) {
 	// Invariant: every virsh/virt-install/virt-customize call must pass
@@ -956,4 +955,231 @@ func TestGetIP_ErrorPropagation(t *testing.T) {
 	if ip != "" {
 		t.Errorf("ip = %q, want empty on error", ip)
 	}
+}
+
+// ---------- DumpXML ----------
+
+func TestDumpXML_ReturnsRawOutput(t *testing.T) {
+	const xml = "<domain type='kvm'><name>motoko-foo</name></domain>"
+	mockRunnerWithFunc(t, func(name string, args ...string) (string, string, error) {
+		if name != "virsh" {
+			t.Errorf("binary = %q, want virsh", name)
+		}
+		if !contains(args, "dumpxml") {
+			t.Errorf("args missing dumpxml: %v", args)
+		}
+		if !contains(args, libvirtName("foo")) {
+			t.Errorf("args missing VM name %q: %v", libvirtName("foo"), args)
+		}
+		return xml, "", nil
+	})
+
+	got, err := DumpXML("foo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != xml {
+		t.Errorf("DumpXML() = %q, want %q", got, xml)
+	}
+}
+
+func TestDumpXML_ErrorPropagates(t *testing.T) {
+	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
+		return "", "", fmt.Errorf("domain not found")
+	})
+	_, err := DumpXML("missing")
+	if err == nil {
+		t.Fatal("expected error from DumpXML")
+	}
+	if !strings.Contains(err.Error(), "dumpxml") {
+		t.Errorf("error = %q, want mention of 'dumpxml'", err.Error())
+	}
+}
+
+// ---------- BlockDevices / parseDomblklist ----------
+
+const sampleDomblklist = ` Target   Source
+---------------------------------------------------
+ vda      /var/lib/libvirt/images/motoko/motoko-foo-overlay.qcow2
+ vdb      /var/lib/libvirt/images/motoko/motoko-foo-data.qcow2
+ vdc      /var/lib/libvirt/cloud-init/motoko/motoko-foo-cloud-init.iso
+`
+
+func TestBlockDevices_ParsesAllDisks(t *testing.T) {
+	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
+		return sampleDomblklist, "", nil
+	})
+
+	devs, err := BlockDevices("foo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(devs) != 3 {
+		t.Fatalf("expected 3 devices, got %d (%v)", len(devs), devs)
+	}
+
+	wantPairs := []struct{ target, source string }{
+		{"vda", "/var/lib/libvirt/images/motoko/motoko-foo-overlay.qcow2"},
+		{"vdb", "/var/lib/libvirt/images/motoko/motoko-foo-data.qcow2"},
+		{"vdc", "/var/lib/libvirt/cloud-init/motoko/motoko-foo-cloud-init.iso"},
+	}
+	for i, want := range wantPairs {
+		if devs[i].Target != want.target {
+			t.Errorf("devs[%d].Target = %q, want %q", i, devs[i].Target, want.target)
+		}
+		if devs[i].Source != want.source {
+			t.Errorf("devs[%d].Source = %q, want %q", i, devs[i].Source, want.source)
+		}
+	}
+}
+
+func TestBlockDevices_EmptyResult(t *testing.T) {
+	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
+		return "", "", nil
+	})
+	devs, err := BlockDevices("foo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(devs) != 0 {
+		t.Errorf("expected 0 devices, got %d", len(devs))
+	}
+}
+
+func TestBlockDevices_HeaderOnly(t *testing.T) {
+	// No disk rows — only the header. Should return no devices, not panic.
+	const headerOnly = " Target   Source\n-----------------------------------------------\n"
+	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
+		return headerOnly, "", nil
+	})
+	devs, err := BlockDevices("foo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(devs) != 0 {
+		t.Errorf("expected 0 devices from header-only, got %d", len(devs))
+	}
+}
+
+func TestBlockDevices_ErrorPropagates(t *testing.T) {
+	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
+		return "", "", fmt.Errorf("domain not found")
+	})
+	_, err := BlockDevices("missing")
+	if err == nil {
+		t.Fatal("expected error from BlockDevices")
+	}
+	if !strings.Contains(err.Error(), "domblklist") {
+		t.Errorf("error = %q, want mention of 'domblklist'", err.Error())
+	}
+}
+
+func TestParseDomblklist_IgnoresLinesWithoutAbsolutePath(t *testing.T) {
+	// A line like "vdd  -" (no media) should not produce a device.
+	input := " Target   Source\n-----------------------------------------------\n" +
+		" vda      /var/lib/libvirt/images/overlay.qcow2\n" +
+		" vdd      -\n"
+	devs := parseDomblklist(input)
+	if len(devs) != 1 {
+		t.Fatalf("expected 1 device, got %d (%v)", len(devs), devs)
+	}
+	if devs[0].Source != "/var/lib/libvirt/images/overlay.qcow2" {
+		t.Errorf("devs[0].Source = %q", devs[0].Source)
+	}
+}
+
+func TestParseDomblklist_SkipsShortLines(t *testing.T) {
+	// Garbage / blank lines must not produce a device.
+	devs := parseDomblklist("\n\n   \n")
+	if len(devs) != 0 {
+		t.Errorf("expected 0 devices from blank input, got %d", len(devs))
+	}
+}
+
+func TestParseDomblklist_PicksFirstPathField(t *testing.T) {
+	// If libvirt ever changes the column order, the parser must still find
+	// the source path as the first "/"-prefixed token.
+	input := " T  S1  S2\n----\n vda  /path/a  /path/b\n"
+	devs := parseDomblklist(input)
+	if len(devs) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devs))
+	}
+	if devs[0].Source != "/path/a" {
+		t.Errorf("Source = %q, want first path field /path/a", devs[0].Source)
+	}
+}
+
+// ---------- CopyDataDiskQEMU ----------
+
+func TestCopyDataDiskQEMU_ArgsUseForceSharedLock(t *testing.T) {
+	recs := mockRunner(t)
+	if err := CopyDataDiskQEMU("/src.qcow2", "/dst.qcow2"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*recs) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(*recs))
+	}
+	rec := (*recs)[0]
+	if rec.name != "qemu-img" {
+		t.Errorf("binary = %q, want qemu-img", rec.name)
+	}
+	args := strings.Join(rec.args, " ")
+	// The -U (force shared read lock) is mandatory for online copies — without
+	// it qemu-img fails with "Failed to get shared 'consistent read' lock"
+	// when a running VM holds the qcow2 lock on src.
+	wantParts := []string{"convert", "-U", "-O qcow2", "/src.qcow2", "/dst.qcow2"}
+	for _, want := range wantParts {
+		if !strings.Contains(args, want) {
+			t.Errorf("args missing %q\ngot: %s", want, args)
+		}
+	}
+}
+
+func TestCopyDataDiskQEMU_ErrorPropagates(t *testing.T) {
+	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
+		return "", "qemu-img: error", fmt.Errorf("exit 1")
+	})
+	err := CopyDataDiskQEMU("/src.qcow2", "/dst.qcow2")
+	if err == nil {
+		t.Fatal("expected error from CopyDataDiskQEMU")
+	}
+}
+
+// ---------- CheckQCOW2 ----------
+
+func TestCheckQCOW2_RunsCheckOnPath(t *testing.T) {
+	recs := mockRunner(t)
+	if err := CheckQCOW2("/img.qcow2"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*recs) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(*recs))
+	}
+	rec := (*recs)[0]
+	if rec.name != "qemu-img" {
+		t.Errorf("binary = %q, want qemu-img", rec.name)
+	}
+	if rec.args[0] != "check" || rec.args[1] != "/img.qcow2" {
+		t.Errorf("args = %v, want [check /img.qcow2]", rec.args)
+	}
+}
+
+func TestCheckQCOW2_ErrorPropagates(t *testing.T) {
+	mockRunnerWithFunc(t, func(string, ...string) (string, string, error) {
+		return "", "leaks: 1", fmt.Errorf("exit 1")
+	})
+	err := CheckQCOW2("/bad.qcow2")
+	if err == nil {
+		t.Fatal("expected error from CheckQCOW2 on corrupt image")
+	}
+}
+
+// contains is a small helper to keep the test bodies terse.
+func contains[T comparable](s []T, v T) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
