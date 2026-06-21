@@ -985,3 +985,64 @@ func TestBackup_CommandRegistered(t *testing.T) {
 		t.Error("backup subcommand is not registered on rootCmd")
 	}
 }
+
+// ---------- sshTarStatus: tar/ssh exit-code interpretation ----------
+
+func TestSSHTarStatus(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not in PATH")
+	}
+	// Real *exec.ExitError values with known codes — one can't be constructed
+	// directly, so run a shell that exits with each code.
+	run := func(script string) error {
+		return exec.Command("sh", "-c", script).Run()
+	}
+
+	if err := sshTarStatus(nil); err != nil {
+		t.Errorf("sshTarStatus(nil) = %v, want nil", err)
+	}
+	// tar exits 1 when a file changed while being read — routine on a live VM,
+	// archive still complete, so tolerated.
+	if err := sshTarStatus(run("exit 1")); err != nil {
+		t.Errorf("sshTarStatus(exit 1) = %v, want nil (benign)", err)
+	}
+	// Fatal tar (>=2) and ssh's own failure (255) must surface as errors.
+	if err := sshTarStatus(run("exit 2")); err == nil {
+		t.Error("sshTarStatus(exit 2) = nil, want error")
+	}
+	if err := sshTarStatus(run("exit 255")); err == nil {
+		t.Error("sshTarStatus(exit 255) = nil, want error")
+	}
+	// A non-ExitError (e.g. ssh failed to start) is returned unchanged.
+	sentinel := errors.New("ssh not found")
+	if err := sshTarStatus(sentinel); !errors.Is(err, sentinel) {
+		t.Errorf("sshTarStatus(non-exit err) = %v, want sentinel", err)
+	}
+}
+
+// ---------- cmdReader: drained-to-EOF path returns the exit status ----------
+
+func TestCmdReader_CloseAfterEOFReturnsExitStatus(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not in PATH")
+	}
+	cmd := exec.Command("sh", "-c", "echo hi")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	r := &cmdReader{Reader: stdout, cmd: cmd}
+	// Drain to EOF so Close reaps (not kills) and reports the real exit status.
+	if _, err := io.Copy(io.Discard, r); err != nil {
+		t.Fatalf("draining stream: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Errorf("Close after clean EOF = %v, want nil (exit 0)", err)
+	}
+	if cmd.ProcessState == nil || !cmd.ProcessState.Success() {
+		t.Error("expected a successful process state after EOF + Close")
+	}
+}

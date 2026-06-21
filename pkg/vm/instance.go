@@ -280,12 +280,11 @@ func DisableAutostart(name string) error {
 }
 
 // BlockDevice represents a single disk attached to a VM, as reported by
-// `virsh domblklist`. DeviceType is "disk" or "cdrom"; Source is the host
-// absolute path (empty when libvirt reports no media in a cdrom slot).
+// `virsh domblklist`: Target is the guest device name (vda, vdb, ...) and
+// Source is the host absolute path.
 type BlockDevice struct {
-	Target     string
-	Source     string
-	DeviceType string
+	Target string
+	Source string
 }
 
 // DumpXML returns the raw libvirt domain XML for the instance. Used by

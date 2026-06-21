@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,12 +23,12 @@ var (
 
 	// Seams for testability. Each function variable delegates to the real
 	// implementation; tests swap them with stubs/fakes.
-	backupVMStateFn        = vm.State
-	backupDumpXMLFn        = vm.DumpXML
-	backupBlockDevicesFn   = vm.BlockDevices
-	backupCopyDataDiskFn   = vm.CopyDataDiskQEMU
-	backupCheckQCOW2Fn     = vm.CheckQCOW2
-	backupGetIPFn          = vm.GetIP
+	backupVMStateFn      = vm.State
+	backupDumpXMLFn      = vm.DumpXML
+	backupBlockDevicesFn = vm.BlockDevices
+	backupCopyDataDiskFn = vm.CopyDataDiskQEMU
+	backupCheckQCOW2Fn   = vm.CheckQCOW2
+	backupGetIPFn        = vm.GetIP
 
 	// backupRunSSHTar runs `ssh ... tar -C <dir> -czf - .` and returns the
 	// stream produced by ssh. Tests substitute a fake to feed canned bytes
@@ -317,31 +318,62 @@ func pullDataTarball(name, keyPath, user, ip, remoteHome, localPath string) erro
 	if err != nil {
 		return err
 	}
-	defer func() { _ = rc.Close() }()
 
 	f, err := os.OpenFile(localPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
+		_ = rc.Close()
 		return err
 	}
-	// Stream the remote gzipped tar to disk, then validate the resulting
-	// file with a gzip reader. Validating the bytes-on-disk (rather than
-	// pipe through gzip on the way in) avoids the awkward "consume the
-	// stream twice" pattern, and matches the actual file the operator
-	// will use for restore.
-	if _, err := io.Copy(f, rc); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("writing tarball to %s: %w", localPath, err)
+
+	// Drain the remote gzipped tar to disk, THEN Close (which reaps ssh and
+	// returns its exit status, so a failed remote tar surfaces instead of being
+	// masked). Validate the bytes-on-disk with a gzip reader — the same file the
+	// operator restores from. Any failure leaves a partial/suspect tarball, so
+	// remove it: a half-written backstop mistaken for a good one is worse than
+	// none at all.
+	_, copyErr := io.Copy(f, rc)
+	waitErr := rc.Close()
+	closeErr := f.Close()
+
+	fail := func(e error) error {
+		_ = os.Remove(localPath)
+		return e
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("closing tarball: %w", err)
+	switch {
+	case copyErr != nil:
+		return fail(fmt.Errorf("writing tarball to %s: %w", localPath, copyErr))
+	case closeErr != nil:
+		return fail(fmt.Errorf("closing tarball: %w", closeErr))
+	}
+	if err := sshTarStatus(waitErr); err != nil {
+		return fail(err)
 	}
 	if err := validateGzipFile(localPath); err != nil {
-		return err
+		return fail(err)
 	}
 	if err := os.Chmod(localPath, 0600); err != nil {
 		return fmt.Errorf("locking down tarball: %w", err)
 	}
 	return nil
+}
+
+// sshTarStatus interprets the exit status of the `ssh ... tar -czf -` pull. GNU
+// tar exits 1 when a file changed while being read — routine on a live VM, and
+// the archive is still complete, so it's tolerated. Exit >=2 (fatal tar error)
+// or ssh's own non-zero (e.g. 255 on connection loss) means the tarball is
+// unreliable and must be treated as a failed backstop.
+func sshTarStatus(waitErr error) error {
+	if waitErr == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) {
+		if exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return fmt.Errorf("remote tar/ssh exited %d", exitErr.ExitCode())
+	}
+	return waitErr
 }
 
 // validateGzipFile opens path, reads it through a gzip.Reader, and returns an
@@ -389,13 +421,25 @@ func defaultRunSSHTar(sshArgv []string) (io.ReadCloser, error) {
 	return &cmdReader{Reader: stdout, cmd: cmd}, nil
 }
 
-// cmdReader wraps an io.Reader with a process handle. Close kills the process
-// (if still running) and waits for it. Used by defaultRunSSHTar to keep ssh
-// from outliving its parent if the caller bails out mid-stream.
+// cmdReader wraps a process's stdout pipe with its handle. The caller drains
+// the stream to EOF, then Close reaps the process and returns its exit status —
+// so a failed remote command surfaces rather than being masked by an
+// unconditional kill. If the caller abandons the stream before EOF, Close
+// instead kills the process (so ssh isn't left blocked writing to a pipe nobody
+// drains) and swallows the resulting status.
 type cmdReader struct {
 	io.Reader
 	cmd    *exec.Cmd
+	eof    bool
 	closed bool
+}
+
+func (r *cmdReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err == io.EOF {
+		r.eof = true
+	}
+	return n, err
 }
 
 func (r *cmdReader) Close() error {
@@ -403,15 +447,19 @@ func (r *cmdReader) Close() error {
 		return nil
 	}
 	r.closed = true
-	if r.cmd.ProcessState == nil {
-		// Process still running — kill it and wait for it to exit. If the
-		// caller already called Wait themselves, ProcessState is non-nil
-		// and we skip straight to returning nil; calling Wait twice on the
-		// same exec.Cmd returns "Wait was already called".
-		_ = r.cmd.Process.Kill()
-		return r.cmd.Wait()
+	if r.cmd.ProcessState != nil {
+		return nil
 	}
-	return nil
+	if !r.eof {
+		// Stream abandoned before EOF: kill ssh so Wait can't deadlock on a
+		// process blocked writing to an undrained pipe. The "signal: killed"
+		// status is expected here, not a remote failure, so it's dropped.
+		_ = r.cmd.Process.Kill()
+		_ = r.cmd.Wait()
+		return nil
+	}
+	// Drained to EOF — return ssh's real exit status.
+	return r.cmd.Wait()
 }
 
 // writeRestoreReadme drops a human-readable README.txt into the backup dir

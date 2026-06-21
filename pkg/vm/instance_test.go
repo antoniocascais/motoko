@@ -218,9 +218,9 @@ func TestApplyTuning_SkipsNetIfNoMAC(t *testing.T) {
 
 func TestParseMACFromDomiflist(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		want   string
+		name  string
+		input string
+		want  string
 	}{
 		{
 			name: "standard output",
@@ -358,7 +358,6 @@ func TestListAll_FiltersByPrefix(t *testing.T) {
 		t.Errorf("vms[1].IP = %q, want empty", vms[1].IP)
 	}
 }
-
 
 func TestLibvirtCommands_IncludeConnectFlag(t *testing.T) {
 	// Invariant: every virsh/virt-install/virt-customize call must pass
