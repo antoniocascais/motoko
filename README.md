@@ -65,6 +65,40 @@ systemctl --user restart claude-assistant.service
 
 To set up the Telegram bot plugin, see [docs/telegram-plugin-setup.md](docs/telegram-plugin-setup.md).
 
+## Backups
+
+`motoko backup <name>` captures a restorable snapshot of an instance into a local directory. Default destination is `~/motoko-backups/<name>-YYYYMMDD-HHMM/`; pass `--output <dir>` to override. `-y`/`--yes` skips the confirmation prompt for online (running) backups.
+
+What's in the backup directory:
+
+- `data.tar.gz` — gzipped tar of `~/data` pulled over SSH (running backups only)
+- `data-disk.qcow2` — a copy of the data disk, made with `qemu-img convert -U` to allow the copy while the VM holds the qcow2 lock, and verified with `qemu-img check`
+- `<name>.xml` — `virsh dumpxml` output (the full VM definition)
+- `<name>-cloud-init.iso` — the cloud-init seed, including the Telegram bot token
+- `keys/` — the instance's SSH keypair
+
+The directory and every file are mode `0700` and `0600` respectively, because the cloud-init ISO contains the bot token and `keys/` contains the SSH private key.
+
+Running vs shut off:
+
+- **Shut off** — the data-disk copy is crash-consistent. No `data.tar.gz` is produced (nothing is mounted over SSH).
+- **Running** — the data-disk copy is *not* crash-consistent. `data.tar.gz` is the consistency backstop; treat it as the authoritative filesystem view. The command warns and asks for confirmation; pass `-y` to skip.
+
+Restoring (manual; no restore command):
+
+- **File-level** — untar `data.tar.gz` into a fresh instance's `~/data`:
+  ```
+  rm -rf ~/data && mkdir ~/data && tar -xzf data.tar.gz -C ~/data
+  ```
+- **Block-level** — replace the data disk of a stopped instance with `data-disk.qcow2`:
+  ```
+  motoko stop <name>
+  sudo cp data-disk.qcow2 <libvirt images dir>/motoko-<name>-data.qcow2
+  motoko start <name>
+  ```
+
+The backup directory also contains a `README.txt` with these instructions.
+
 ## Commands
 
 ![motoko interaction demo](docs/demo-interact.gif)
@@ -84,6 +118,8 @@ motoko inject <name> <prompt>        Send a prompt to Claude Code
 motoko start <name>                  Start a stopped instance
 motoko stop <name>                   Gracefully shut down
 motoko rebuild <name> [--yes]        Reset overlay, preserve data disk
+motoko backup <name> [--yes]         Snapshot an instance to a local directory
+  --output <dir>                       override backup destination (default ~/motoko-backups/<name>-<ts>/)
 motoko update <name>                 Bump RAM/vCPUs of a stopped instance
   --ram <MiB>                          new RAM size (>= 512)
   --cpus <N>                           new vCPU count (>= 1)
