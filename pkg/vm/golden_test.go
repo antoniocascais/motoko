@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -40,12 +41,16 @@ func TestGoldenImageExists_False(t *testing.T) {
 }
 
 // goldenMockRunner creates a mock that writes the temp file when cp is called,
-// so os.Rename succeeds in BuildGoldenImage.
+// so os.Rename succeeds in BuildGoldenImage, and reports no backing file for
+// every image the reference scan inspects.
 func goldenMockRunner(t *testing.T) *[]execRecord {
 	t.Helper()
 	return mockRunnerWithFunc(t, func(name string, args ...string) (string, string, error) {
 		if name == "cp" && len(args) >= 2 {
 			_ = os.WriteFile(args[len(args)-1], []byte("fake"), 0644)
+		}
+		if name == "qemu-img" && len(args) > 0 && args[0] == "info" {
+			return `{"format": "qcow2"}`, "", nil
 		}
 		return "", "", nil
 	})
@@ -71,20 +76,18 @@ func TestBuildGoldenImage_CommandSequence(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(*recs) != 4 {
-		names := make([]string, len(*recs))
-		for i, r := range *recs {
-			names[i] = r.name
+	// The reference scan (qemu-img info on the base image, the only other
+	// qcow2 in dir) must come last: right before the golden is replaced.
+	got := make([]string, len(*recs))
+	for i, r := range *recs {
+		got[i] = r.name
+		if r.name == "qemu-img" {
+			got[i] += " " + r.args[0]
 		}
-		t.Fatalf("expected 4 commands, got %d: %v", len(*recs), names)
 	}
-
-	// Verify command order
-	wantCmds := []string{"cp", "qemu-img", "virt-customize", "guestfish"}
-	for i, want := range wantCmds {
-		if (*recs)[i].name != want {
-			t.Errorf("command %d = %q, want %q", i, (*recs)[i].name, want)
-		}
+	want := []string{"cp", "qemu-img resize", "virt-customize", "guestfish", "qemu-img info"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("commands = %v, want %v", got, want)
 	}
 }
 
