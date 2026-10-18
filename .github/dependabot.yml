@@ -10,6 +10,10 @@ updates:
       day: friday
       time: "13:00"
       timezone: Europe/Berlin
+    # One PR per week for all action bumps instead of one per action.
+    groups:
+      actions:
+        patterns: ["*"]
 
   - package-ecosystem: gomod
     directory: /
