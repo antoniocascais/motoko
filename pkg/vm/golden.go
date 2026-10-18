@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash"
 	"io"
@@ -101,6 +102,17 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 		return fmt.Errorf("filesystem check: %w", err)
 	}
 
+	// Re-check at the moment of replacement, not just before the build: the bake
+	// takes minutes, and an instance created meanwhile would otherwise be left
+	// backed by a different image than the one its overlay was written against.
+	refs, err := GoldenReferences(cfg.ImagesDir, cfg.GoldenName)
+	if err != nil {
+		return fmt.Errorf("checking golden image references: %w", err)
+	}
+	if len(refs) > 0 {
+		return &GoldenInUseError{Golden: filepath.Join(cfg.ImagesDir, cfg.GoldenName), Refs: refs}
+	}
+
 	goldenPath := filepath.Join(cfg.ImagesDir, cfg.GoldenName)
 	if err := os.Rename(tmpPath, goldenPath); err != nil {
 		return fmt.Errorf("moving golden image: %w", err)
@@ -112,6 +124,109 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 	}
 
 	return nil
+}
+
+// GoldenRef is an image whose qcow2 backing file is the golden image.
+type GoldenRef struct {
+	Path string
+	// Unverified marks an image whose backing file could not be determined. It
+	// is counted as a reference so a scan failure never permits replacing the
+	// golden image.
+	Unverified bool
+}
+
+// GoldenInUseError reports that the golden image cannot be replaced because
+// existing images are backed by it.
+type GoldenInUseError struct {
+	Golden string
+	Refs   []GoldenRef
+}
+
+func (e *GoldenInUseError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "golden image %s is the backing file of %d image(s):", e.Golden, len(e.Refs))
+	for _, r := range e.Refs {
+		b.WriteString("\n  " + r.Path)
+		if r.Unverified {
+			b.WriteString(" (backing file unreadable, assumed in use)")
+		}
+	}
+	b.WriteString("\nReplacing or recreating it would corrupt them. To roll out a new golden image: set a new " +
+		"golden_image.name in the config, run `motoko build`, then `motoko rebuild <name>` for each instance.")
+	return b.String()
+}
+
+// GoldenReferences lists the images in imagesDir that use the golden image as
+// their qcow2 backing file. Overlays record the backing file by absolute path,
+// so replacing the golden in place makes every stopped overlay read its deltas
+// on top of different base blocks — silent root-filesystem corruption on next
+// boot. The overlays themselves are scanned rather than instance state, because
+// orphaned and pre-state instances exist. A missing golden is still scanned:
+// overlays left pointing at a deleted golden fail loudly at boot, but building a
+// new one at the same path would make them boot silently corrupted.
+func GoldenReferences(imagesDir, goldenName string) ([]GoldenRef, error) {
+	goldenPath := filepath.Join(imagesDir, goldenName)
+	goldenInfo, err := os.Stat(goldenPath)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("checking golden image: %w", err)
+	}
+
+	entries, err := os.ReadDir(imagesDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading images dir: %w", err)
+	}
+
+	var refs []GoldenRef
+	for _, e := range entries {
+		name := e.Name()
+		// Hidden files are in-progress bakes/downloads, never instance images.
+		if e.IsDir() || name == goldenName || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".qcow2") {
+			continue
+		}
+		p := filepath.Join(imagesDir, name)
+		backing, err := backingFile(p)
+		if err != nil {
+			refs = append(refs, GoldenRef{Path: p, Unverified: true})
+			continue
+		}
+		if backing == "" {
+			continue
+		}
+		if !filepath.IsAbs(backing) {
+			backing = filepath.Join(imagesDir, backing)
+		}
+		// Compare by file identity too, so a backing path that reaches the golden
+		// through a symlink or a different spelling still counts. Only possible
+		// while the golden exists; a missing one is matched by path alone.
+		if filepath.Clean(backing) == goldenPath {
+			refs = append(refs, GoldenRef{Path: p})
+		} else if goldenInfo == nil {
+			continue
+		} else if bi, err := os.Stat(backing); err == nil && os.SameFile(bi, goldenInfo) {
+			refs = append(refs, GoldenRef{Path: p})
+		}
+	}
+	return refs, nil
+}
+
+// backingFile returns the image's qcow2 backing file path, or "" if it has none.
+// -U (force share) is required: running VMs hold a write lock on their overlay.
+func backingFile(path string) (string, error) {
+	stdout, _, err := runCmd("qemu-img", "info", "-U", "--output=json", path)
+	if err != nil {
+		return "", err
+	}
+	var info struct {
+		Backing     string `json:"backing-filename"`
+		FullBacking string `json:"full-backing-filename"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &info); err != nil {
+		return "", fmt.Errorf("parsing qemu-img info for %s: %w", path, err)
+	}
+	if info.FullBacking != "" {
+		return info.FullBacking, nil
+	}
+	return info.Backing, nil
 }
 
 // FetchDebianChecksum downloads SHA512SUMS from the same directory as baseURL
