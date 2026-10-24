@@ -32,6 +32,7 @@ type InstanceParams struct {
 	TelegramBotToken  string
 	ClaudeMD          string
 	ClaudeRestartSh   string
+	ClaudeRunSh       string
 	CmdQueueSh        string
 }
 
@@ -40,6 +41,7 @@ const (
 	tmplMetaData      = "templates/meta-data.yml.tmpl"
 	tmplClaudeMD      = "templates/vm-CLAUDE.md.tmpl"
 	tmplClaudeRestart = "scripts/claude-restart.sh.tmpl"
+	tmplClaudeRun     = "scripts/claude-run.sh.tmpl"
 	tmplCmdQueue      = "scripts/cmd-queue.sh.tmpl"
 )
 
@@ -84,6 +86,11 @@ func NewInstanceParams(cfg *config.Config, name, hostname, telegramToken string,
 		return nil, fmt.Errorf("rendering claude-restart.sh: %w", err)
 	}
 
+	runSh, err := renderEmbedded(scriptFS, tmplClaudeRun, scriptData)
+	if err != nil {
+		return nil, fmt.Errorf("rendering claude-run.sh: %w", err)
+	}
+
 	queueSh, err := renderEmbedded(scriptFS, tmplCmdQueue, scriptData)
 	if err != nil {
 		return nil, fmt.Errorf("rendering cmd-queue.sh: %w", err)
@@ -101,6 +108,7 @@ func NewInstanceParams(cfg *config.Config, name, hostname, telegramToken string,
 		TelegramBotToken:  telegramToken,
 		ClaudeMD:          claudeMD,
 		ClaudeRestartSh:   restartSh,
+		ClaudeRunSh:       runSh,
 		CmdQueueSh:        queueSh,
 	}, nil
 }

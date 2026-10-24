@@ -62,14 +62,16 @@ func runBuild(cfg *config.Config, force bool) error {
 	// previous golden usable.
 	fmt.Fprintln(os.Stderr, "Building golden image (this may take several minutes)...")
 	return buildGoldenFn(vm.BuildGoldenConfig{
-		ImagesDir:    cfg.ImagesDir,
-		BaseURL:      cfg.BaseImage.URL,
-		BaseChecksum: cfg.BaseImage.Checksum,
-		BaseFilename: cfg.BaseImage.Filename,
-		GoldenName:   cfg.GoldenImage.Name,
-		RootDiskGB:   cfg.GoldenImage.RootDiskGB,
-		Packages:     cfg.GoldenImage.Packages,
-		VMUser:       cfg.VMUser,
+		ImagesDir:     cfg.ImagesDir,
+		BaseURL:       cfg.BaseImage.URL,
+		BaseChecksum:  cfg.BaseImage.Checksum,
+		BaseFilename:  cfg.BaseImage.Filename,
+		GoldenName:    cfg.GoldenImage.Name,
+		RootDiskGB:    cfg.GoldenImage.RootDiskGB,
+		Packages:      cfg.GoldenImage.Packages,
+		VMUser:        cfg.VMUser,
+		ClaudeChannel: cfg.GoldenImage.ClaudeChannel,
+		ClaudeVersion: cfg.GoldenImage.ClaudeVersion,
 	})
 }
 

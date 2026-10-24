@@ -428,10 +428,11 @@ func TestRenderUserData_PersonaWithYAMLSpecialChars(t *testing.T) {
 func TestRenderUserData_WriteFilesCount(t *testing.T) {
 	output := renderUserData(t, testParams(t))
 	// Expected: sysctl, apt proxy, environment, hosts, systemd service,
-	// telegram .env, claude-env, bash_aliases, CLAUDE.md, claude-restart.sh, cmd-queue.sh
+	// telegram .env, claude-env, bash_aliases, CLAUDE.md, claude-restart.sh,
+	// claude-run.sh, cmd-queue.sh
 	count := strings.Count(output, "  - path: /")
-	if count != 11 {
-		t.Errorf("write_files should have 11 entries, got %d", count)
+	if count != 12 {
+		t.Errorf("write_files should have 12 entries, got %d", count)
 	}
 }
 
@@ -630,7 +631,7 @@ func TestRenderUserData_NoTelegram_ServiceWithoutChannels(t *testing.T) {
 	if strings.Contains(output, "--channels") {
 		t.Error("claude-assistant service should not include --channels when no telegram token")
 	}
-	if !strings.Contains(output, "claude --dangerously-skip-permissions") {
+	if !strings.Contains(output, "claude-run.sh --dangerously-skip-permissions'") {
 		t.Error("claude-assistant service should still start claude without --channels")
 	}
 }
@@ -648,11 +649,11 @@ func TestRenderUserData_NoTelegram_AliasWithoutChannels(t *testing.T) {
 func TestRenderUserData_NoTelegram_WriteFilesCount(t *testing.T) {
 	output := renderUserData(t, testParamsNoTelegram(t))
 	// Without telegram: sysctl, apt proxy, environment, hosts, systemd service,
-	// claude-env (proxy only), bash_aliases, CLAUDE.md, claude-restart.sh, cmd-queue.sh = 10
-	// (telegram .env is the only one dropped)
+	// claude-env (proxy only), bash_aliases, CLAUDE.md, claude-restart.sh, claude-run.sh,
+	// cmd-queue.sh = 11 (telegram .env is the only one dropped)
 	count := strings.Count(output, "  - path: /")
-	if count != 10 {
-		t.Errorf("write_files without telegram should have 10 entries, got %d", count)
+	if count != 11 {
+		t.Errorf("write_files without telegram should have 11 entries, got %d", count)
 	}
 }
 

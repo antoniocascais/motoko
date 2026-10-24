@@ -130,6 +130,8 @@ func TestRunBuild_PassesConfig(t *testing.T) {
 	cfg.GoldenImage.Name = "g.qcow2"
 	cfg.GoldenImage.RootDiskGB = 13
 	cfg.GoldenImage.Packages = []string{"jq"}
+	cfg.GoldenImage.ClaudeChannel = "latest"
+	cfg.GoldenImage.ClaudeVersion = "2.1.310"
 
 	var err error
 	captureStderr(t, func() { err = runBuild(cfg, false) })
@@ -141,14 +143,16 @@ func TestRunBuild_PassesConfig(t *testing.T) {
 		t.Errorf("scan args = %v, want %v", s.refsArgs, want)
 	}
 	want := vm.BuildGoldenConfig{
-		ImagesDir:    "/imgs",
-		BaseURL:      "https://example.com/b.qcow2",
-		BaseChecksum: "sha512:ab",
-		BaseFilename: "b.qcow2",
-		GoldenName:   "g.qcow2",
-		RootDiskGB:   13,
-		Packages:     []string{"jq"},
-		VMUser:       "agent",
+		ImagesDir:     "/imgs",
+		BaseURL:       "https://example.com/b.qcow2",
+		BaseChecksum:  "sha512:ab",
+		BaseFilename:  "b.qcow2",
+		GoldenName:    "g.qcow2",
+		RootDiskGB:    13,
+		Packages:      []string{"jq"},
+		VMUser:        "agent",
+		ClaudeChannel: "latest",
+		ClaudeVersion: "2.1.310",
 	}
 	if !reflect.DeepEqual(s.buildCfg, want) {
 		t.Errorf("build config = %+v\nwant           %+v", s.buildCfg, want)

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"crypto/sha512"
+	_ "embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -24,6 +26,28 @@ var httpClient = &http.Client{Timeout: 5 * time.Minute}
 // validVMUser matches safe Unix usernames for interpolation into virt-customize --run-command.
 var validVMUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
 
+// Channel and version are interpolated into apt files and a --run-command;
+// config validation already enforces these, this is the last gate before use.
+var (
+	validClaudeChannel = regexp.MustCompile(`^(stable|latest)$`)
+	validClaudeVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+)
+
+// claudeCodeKey is Anthropic's Claude Code release signing key
+// (fingerprint 31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE). Embedded
+// rather than fetched at build time so apt trusts the key motoko shipped, not
+// whatever the network returns.
+//
+//go:embed keys/claude-code.asc
+var claudeCodeKey []byte
+
+const (
+	claudeRepoBase    = "https://downloads.claude.ai/claude-code/apt"
+	claudeKeyringPath = "/etc/apt/keyrings/claude-code.gpg"
+	claudeSourcesPath = "/etc/apt/sources.list.d/claude-code.list"
+	claudePinPath     = "/etc/apt/preferences.d/claude-code"
+)
+
 // BuildGoldenConfig holds parameters for building a golden base image.
 type BuildGoldenConfig struct {
 	ImagesDir    string
@@ -32,8 +56,12 @@ type BuildGoldenConfig struct {
 	BaseFilename string
 	GoldenName   string
 	RootDiskGB   int
-	Packages     []string // nodejs, npm appended automatically
+	Packages     []string // nodejs, npm, claude-code appended automatically
 	VMUser       string
+	// ClaudeChannel is the apt suite ("stable" or "latest") Claude Code is installed from.
+	ClaudeChannel string
+	// ClaudeVersion pins an exact upstream version (X.Y.Z); "" = newest in channel.
+	ClaudeVersion string
 }
 
 // GoldenImageExists checks whether the golden image file exists.
@@ -52,6 +80,12 @@ func GoldenImageExists(imagesDir, goldenName string) (bool, error) {
 func BuildGoldenImage(cfg BuildGoldenConfig) error {
 	if !validVMUser.MatchString(cfg.VMUser) {
 		return fmt.Errorf("invalid vm_user %q: must match [a-z_][a-z0-9_-]*", cfg.VMUser)
+	}
+	if !validClaudeChannel.MatchString(cfg.ClaudeChannel) {
+		return fmt.Errorf("invalid claude_channel %q: must be stable or latest", cfg.ClaudeChannel)
+	}
+	if cfg.ClaudeVersion != "" && !validClaudeVersion.MatchString(cfg.ClaudeVersion) {
+		return fmt.Errorf("invalid claude_version %q: must be X.Y.Z", cfg.ClaudeVersion)
 	}
 
 	basePath := filepath.Join(cfg.ImagesDir, cfg.BaseFilename)
@@ -85,15 +119,46 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 		return fmt.Errorf("resizing image: %w", err)
 	}
 
-	packages := append(append([]string{}, cfg.Packages...), "nodejs", "npm")
+	keyPath, err := writeClaudeKey()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(keyPath) }()
+
+	// nodejs/npm are no longer needed by Claude Code (a self-contained binary from
+	// Anthropic's signed apt repo); they stay for the Telegram plugin's dependency
+	// install.
+	packages := append(append([]string{}, cfg.Packages...), "nodejs", "npm", "claude-code")
+	// The keyring and source entry must exist before --update so apt indexes the
+	// repo and verifies its signature with that key only (signed-by), never via
+	// apt's global trust.
 	args := []string{
 		"-a", tmpPath,
 		"--run-command", "growpart /dev/sda 1 && resize2fs /dev/sda1",
+		"--mkdir", "/etc/apt/keyrings",
+		"--upload", keyPath + ":" + claudeKeyringPath,
+		// --upload keeps the temp file's 0600; apt verifies as the _apt user.
+		"--chmod", "0644:" + claudeKeyringPath,
+		"--write", claudeSourcesPath + ":" + claudeSourceLine(cfg.ClaudeChannel),
+	}
+	if cfg.ClaudeVersion != "" {
+		args = append(args, "--write", claudePinPath+":"+claudePin(cfg.ClaudeVersion))
+	}
+	args = append(args,
 		"--update",
 		"--install", strings.Join(packages, ","),
-		"--run-command", "npm install -g @anthropic-ai/claude-code",
-		"--run-command", fmt.Sprintf("useradd -m -s /bin/bash %s", cfg.VMUser),
+	)
+	if cfg.ClaudeVersion != "" {
+		args = append(args, "--run-command", claudeVersionCheck(cfg.ClaudeVersion))
 	}
+	// The source and key are for the bake only. Left in the image, every in-VM
+	// apt-get update would hit a proxy-blocked host, and allowlisting that host
+	// would let apt move claude off the version baked here.
+	args = append(args,
+		"--delete", claudeSourcesPath,
+		"--delete", claudeKeyringPath,
+		"--run-command", fmt.Sprintf("useradd -m -s /bin/bash %s", cfg.VMUser),
+	)
 	if _, _, err := runCmd("virt-customize", libvirtArgs(args...)...); err != nil {
 		return fmt.Errorf("customizing image: %w", err)
 	}
@@ -124,6 +189,112 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 	}
 
 	return nil
+}
+
+// writeClaudeKey writes the embedded signing key, dearmored, to a temp file for
+// virt-customize --upload. The caller removes it.
+func writeClaudeKey() (string, error) {
+	key, err := dearmor(claudeCodeKey)
+	if err != nil {
+		return "", fmt.Errorf("decoding signing key: %w", err)
+	}
+	f, err := os.CreateTemp("", "motoko-claude-code-*.gpg")
+	if err != nil {
+		return "", fmt.Errorf("creating signing key file: %w", err)
+	}
+	path := f.Name()
+	if _, err := f.Write(key); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("writing signing key file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("writing signing key file: %w", err)
+	}
+	return path, nil
+}
+
+// dearmor converts an ASCII-armored OpenPGP block to the binary form gpgv
+// reads directly. Debian 12's apt would otherwise convert an armored signed-by
+// key itself at every verification, in the deprecated apt-key script.
+func dearmor(armored []byte) ([]byte, error) {
+	const begin, end = "-----BEGIN PGP PUBLIC KEY BLOCK-----", "-----END PGP PUBLIC KEY BLOCK-----"
+	lines := strings.Split(strings.ReplaceAll(string(armored), "\r\n", "\n"), "\n")
+	i := 0
+	for i < len(lines) && strings.TrimSpace(lines[i]) != begin {
+		i++
+	}
+	if i == len(lines) {
+		return nil, fmt.Errorf("no %s line", begin)
+	}
+	// Armor headers (if any) end at the first blank line.
+	for i++; i < len(lines) && strings.TrimSpace(lines[i]) != ""; i++ {
+	}
+	var body, sum string
+	for i++; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		switch {
+		case line == end:
+			data, err := base64.StdEncoding.DecodeString(body)
+			if err != nil {
+				return nil, fmt.Errorf("decoding armor body: %w", err)
+			}
+			if len(data) == 0 {
+				return nil, fmt.Errorf("empty armor body")
+			}
+			if sum != "" {
+				want, err := base64.StdEncoding.DecodeString(sum)
+				if err != nil || len(want) != 3 {
+					return nil, fmt.Errorf("malformed armor checksum %q", sum)
+				}
+				if got := crc24(data); got != uint32(want[0])<<16|uint32(want[1])<<8|uint32(want[2]) {
+					return nil, fmt.Errorf("armor checksum mismatch")
+				}
+			}
+			return data, nil
+		case strings.HasPrefix(line, "="):
+			sum = line[1:]
+		default:
+			body += line
+		}
+	}
+	return nil, fmt.Errorf("no %s line", end)
+}
+
+// crc24 is the OpenPGP armor checksum (RFC 4880 section 6.1).
+func crc24(data []byte) uint32 {
+	crc := uint32(0xB704CE)
+	for _, b := range data {
+		crc ^= uint32(b) << 16
+		for range 8 {
+			crc <<= 1
+			if crc&0x1000000 != 0 {
+				crc ^= 0x1864CFB
+			}
+		}
+	}
+	return crc & 0xFFFFFF
+}
+
+// claudeSourceLine is the apt source entry for a channel. Each channel is its
+// own repo path whose suite has the same name.
+func claudeSourceLine(channel string) string {
+	return fmt.Sprintf("deb [signed-by=%s] %s/%s %s main\n", claudeKeyringPath, claudeRepoBase, channel, channel)
+}
+
+// claudePin makes apt prefer the pinned upstream version over newer ones,
+// whatever its Debian revision. It also keeps an in-VM `apt upgrade` from
+// moving the version away from what the golden image was built with.
+func claudePin(version string) string {
+	return fmt.Sprintf("Package: claude-code\nPin: version %s-*\nPin-Priority: 1001\n", version)
+}
+
+// claudeVersionCheck fails the bake unless the pinned version was installed.
+// A pin on a version the channel does not carry does not make apt fail; it
+// silently installs the newest one instead.
+func claudeVersionCheck(version string) string {
+	return fmt.Sprintf(`v=$(dpkg-query -W -f='${Version}' claude-code); case "$v" in %s-*) ;; *) echo "claude-code $v installed, want %s" >&2; exit 1 ;; esac`, version, version)
 }
 
 // GoldenRef is an image whose qcow2 backing file is the golden image.

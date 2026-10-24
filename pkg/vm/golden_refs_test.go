@@ -311,13 +311,14 @@ func TestGoldenInUseError_Message(t *testing.T) {
 
 func goldenBuildConfig(dir, checksum string) BuildGoldenConfig {
 	return BuildGoldenConfig{
-		ImagesDir:    dir,
-		BaseURL:      "https://example.com/images/base.qcow2",
-		BaseChecksum: checksum,
-		BaseFilename: "base.qcow2",
-		GoldenName:   "golden.qcow2",
-		RootDiskGB:   8,
-		VMUser:       "claude",
+		ImagesDir:     dir,
+		BaseURL:       "https://example.com/images/base.qcow2",
+		BaseChecksum:  checksum,
+		BaseFilename:  "base.qcow2",
+		GoldenName:    "golden.qcow2",
+		RootDiskGB:    8,
+		VMUser:        "claude",
+		ClaudeChannel: "stable",
 	}
 }
 

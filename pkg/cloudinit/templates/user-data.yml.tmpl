@@ -26,6 +26,7 @@ write_files:
       http_proxy={{ .ProxyURL }}
       HTTP_PROXY={{ .ProxyURL }}
       no_proxy=localhost,127.0.0.1
+      DISABLE_UPDATES=1
   - path: /etc/hosts
     content: |
       127.0.0.1 localhost
@@ -41,10 +42,10 @@ write_files:
       [Service]
       Type=forking
       WorkingDirectory=/home/{{ .VMUser }}/data
-      ExecStart=/usr/bin/tmux new-session -d -s claude '/usr/local/bin/claude --dangerously-skip-permissions{{ if .TelegramBotToken }} --channels plugin:telegram@claude-plugins-official{{ end }}'
-      ExecStartPost=/bin/bash -c 'sleep 5 && /usr/bin/tmux send-keys -t claude Enter && sleep 3 && /usr/bin/tmux send-keys -t claude Enter'
-      ExecStop=/usr/bin/tmux kill-session -t claude
-      Restart=on-failure
+      ExecStart=/usr/bin/tmux new-session -d -s claude '/home/{{ .VMUser }}/bin/claude-run.sh --dangerously-skip-permissions{{ if .TelegramBotToken }} --channels plugin:telegram@claude-plugins-official{{ end }}'
+      ExecStartPost=-/bin/bash -c 'sleep 5 && /usr/bin/tmux send-keys -t claude Enter && sleep 3 && /usr/bin/tmux send-keys -t claude Enter'
+      ExecStop=-/usr/bin/tmux kill-session -t claude
+      Restart=always
       RestartSec=10
       EnvironmentFile=/home/{{ .VMUser }}/.claude-env
 
@@ -60,9 +61,10 @@ write_files:
 {{ if .TelegramBotToken }}      TELEGRAM_BOT_TOKEN={{ .TelegramBotToken }}
 {{ end }}      https_proxy={{ .ProxyURL }}
       HTTPS_PROXY={{ .ProxyURL }}
+      DISABLE_UPDATES=1
   - path: /home/{{ .VMUser }}/.bash_aliases
     content: |
-      alias claude='claude --dangerously-skip-permissions{{ if .TelegramBotToken }} --channels plugin:telegram@claude-plugins-official{{ end }}'
+      alias claude='/usr/bin/claude --dangerously-skip-permissions{{ if .TelegramBotToken }} --channels plugin:telegram@claude-plugins-official{{ end }}'
   - path: /home/{{ .VMUser }}/CLAUDE.md
     content: |
 {{ indent 6 .ClaudeMD }}
@@ -70,6 +72,10 @@ write_files:
     permissions: "0755"
     content: |
 {{ indent 6 .ClaudeRestartSh }}
+  - path: /home/{{ .VMUser }}/bin/claude-run.sh
+    permissions: "0755"
+    content: |
+{{ indent 6 .ClaudeRunSh }}
   - path: /home/{{ .VMUser }}/bin/cmd-queue.sh
     permissions: "0755"
     content: |

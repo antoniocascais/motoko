@@ -482,6 +482,21 @@ func TestValidate_NumericBoundaries(t *testing.T) {
 		{"data_disk=0_invalid", func(c *Config) { c.VMDefaults.DataDiskGB = 0 }, true},
 		{"golden_root_disk=1_valid", func(c *Config) { c.GoldenImage.RootDiskGB = 1 }, false},
 		{"golden_root_disk=0_invalid", func(c *Config) { c.GoldenImage.RootDiskGB = 0 }, true},
+		{"claude_channel=stable_valid", func(c *Config) { c.GoldenImage.ClaudeChannel = "stable" }, false},
+		{"claude_channel=latest_valid", func(c *Config) { c.GoldenImage.ClaudeChannel = "latest" }, false},
+		{"claude_channel=empty_invalid", func(c *Config) { c.GoldenImage.ClaudeChannel = "" }, true},
+		{"claude_channel=Stable_invalid", func(c *Config) { c.GoldenImage.ClaudeChannel = "Stable" }, true},
+		{"claude_channel=beta_invalid", func(c *Config) { c.GoldenImage.ClaudeChannel = "beta" }, true},
+		{"claude_channel=suffix_invalid", func(c *Config) { c.GoldenImage.ClaudeChannel = "stable main" }, true},
+		{"claude_version=empty_valid", func(c *Config) { c.GoldenImage.ClaudeVersion = "" }, false},
+		{"claude_version=xyz_valid", func(c *Config) { c.GoldenImage.ClaudeVersion = "2.1.308" }, false},
+		{"claude_version=two_parts_invalid", func(c *Config) { c.GoldenImage.ClaudeVersion = "2.1" }, true},
+		{"claude_version=v_prefix_invalid", func(c *Config) { c.GoldenImage.ClaudeVersion = "v2.1.308" }, true},
+		{"claude_version=debian_rev_invalid", func(c *Config) { c.GoldenImage.ClaudeVersion = "2.1.308-1" }, true},
+		{"claude_version=glob_invalid", func(c *Config) { c.GoldenImage.ClaudeVersion = "2.1.*" }, true},
+		{"claude_version=injection_invalid", func(c *Config) { c.GoldenImage.ClaudeVersion = "2.1.308; reboot" }, true},
+		{"claude_version=newline_invalid", func(c *Config) { c.GoldenImage.ClaudeVersion = "2.1.308\n" }, true},
+		{"claude_version=space_invalid", func(c *Config) { c.GoldenImage.ClaudeVersion = " 2.1.308" }, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -617,5 +632,47 @@ func TestValidate_AllRequiredStrings(t *testing.T) {
 				t.Errorf("error = %q, want mention of %q", err.Error(), tt.errMsg)
 			}
 		})
+	}
+}
+
+func TestDefaultConfig_ClaudeChannelStable(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.GoldenImage.ClaudeChannel != "stable" {
+		t.Errorf("ClaudeChannel = %q, want stable", cfg.GoldenImage.ClaudeChannel)
+	}
+	if cfg.GoldenImage.ClaudeVersion != "" {
+		t.Errorf("ClaudeVersion = %q, want empty", cfg.GoldenImage.ClaudeVersion)
+	}
+}
+
+// Configs written before these keys existed must keep loading, on the default channel.
+func TestLoad_ClaudeKeysOmitted(t *testing.T) {
+	path := writeConfig(t, "golden_image:\n  name: g.qcow2\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.GoldenImage.ClaudeChannel != "stable" || cfg.GoldenImage.ClaudeVersion != "" {
+		t.Errorf("channel/version = %q/%q, want stable/\"\"", cfg.GoldenImage.ClaudeChannel, cfg.GoldenImage.ClaudeVersion)
+	}
+}
+
+func TestLoad_ClaudeKeysSet(t *testing.T) {
+	path := writeConfig(t, "golden_image:\n  claude_channel: latest\n  claude_version: 2.1.310\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.GoldenImage.ClaudeChannel != "latest" || cfg.GoldenImage.ClaudeVersion != "2.1.310" {
+		t.Errorf("channel/version = %q/%q, want latest/2.1.310", cfg.GoldenImage.ClaudeChannel, cfg.GoldenImage.ClaudeVersion)
+	}
+}
+
+// Rejected at load, so a bad value never reaches a build.
+func TestLoad_ClaudeVersionInvalid(t *testing.T) {
+	path := writeConfig(t, "golden_image:\n  claude_version: \"2.1.308; reboot\"\n")
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "claude_version") {
+		t.Errorf("Load() error = %v, want claude_version error", err)
 	}
 }
