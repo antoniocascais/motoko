@@ -4,7 +4,15 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strings"
+)
+
+// Both values end up in apt source/pin files and virt-customize arguments, so
+// they are allowlisted here, before any interpolation.
+var (
+	validClaudeChannel = regexp.MustCompile(`^(stable|latest)$`)
+	validClaudeVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 )
 
 type ValidationErrors []error
@@ -56,6 +64,12 @@ func (c *Config) Validate() error {
 	}
 	if c.GoldenImage.RootDiskGB < 1 {
 		errs = append(errs, fmt.Errorf("golden_image.root_disk_gb must be >= 1 (got %d)", c.GoldenImage.RootDiskGB))
+	}
+	if !validClaudeChannel.MatchString(c.GoldenImage.ClaudeChannel) {
+		errs = append(errs, fmt.Errorf("golden_image.claude_channel must be stable or latest (got %q)", c.GoldenImage.ClaudeChannel))
+	}
+	if c.GoldenImage.ClaudeVersion != "" && !validClaudeVersion.MatchString(c.GoldenImage.ClaudeVersion) {
+		errs = append(errs, fmt.Errorf("golden_image.claude_version must be X.Y.Z or empty (got %q)", c.GoldenImage.ClaudeVersion))
 	}
 
 	if c.Network.LibvirtNetwork == "" {

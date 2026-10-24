@@ -1,0 +1,35 @@
+#!/bin/bash
+# Runs Claude Code inside the claude tmux session and records each exit on the
+# data disk, so a crash-looping assistant leaves evidence that survives rebuild.
+# Usage: claude-run.sh [claude args...]
+
+CLAUDE="/usr/bin/claude"
+LOG="/home/{{ .VMUser }}/data/claude-exit.log"
+MAX_BYTES=1048576
+
+# Appends stdin to the log. One rotated generation caps the disk a restart loop
+# can consume, on every path that writes.
+record() {
+    if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt "$MAX_BYTES" ]; then
+        mv -f "$LOG" "$LOG.1"
+    fi
+    cat >> "$LOG"
+}
+
+# Golden images built before the apt install have claude elsewhere; say so
+# instead of leaving a bare "command not found" restart loop.
+if [ ! -x "$CLAUDE" ]; then
+    echo "=== $(date -Iseconds) $CLAUDE not found: this instance's golden image predates the apt-based install. Build a new golden image and rebuild (README: Updating Claude Code)." | record
+    exit 127
+fi
+
+"$CLAUDE" "$@"
+rc=$?
+
+{
+    echo "=== $(date -Iseconds) claude exited with status $rc"
+    # The pane still shows claude's final output until this script ends.
+    /usr/bin/tmux capture-pane -p -t claude -S -50 2>/dev/null
+} | record
+
+exit "$rc"

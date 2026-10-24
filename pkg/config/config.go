@@ -29,6 +29,10 @@ type GoldenImage struct {
 	Name       string   `yaml:"name"`
 	RootDiskGB int      `yaml:"root_disk_gb"`
 	Packages   []string `yaml:"packages"`
+	// ClaudeChannel selects Anthropic's apt repo suite: "stable" or "latest".
+	ClaudeChannel string `yaml:"claude_channel"`
+	// ClaudeVersion pins an exact upstream version (X.Y.Z); empty = newest in channel.
+	ClaudeVersion string `yaml:"claude_version,omitempty"`
 }
 
 type Network struct {
@@ -68,6 +72,9 @@ func DefaultConfig() *Config {
 			Name:       "debian-12-claude-golden.qcow2",
 			RootDiskGB: 8,
 			Packages:   []string{"python3", "curl", "git", "vim", "htop", "unzip", "tmux"},
+			// stable trails latest by about a week and skips releases with major
+			// regressions — the safer default for agents nobody is watching.
+			ClaudeChannel: "stable",
 		},
 		Network: Network{
 			LibvirtNetwork: "default",

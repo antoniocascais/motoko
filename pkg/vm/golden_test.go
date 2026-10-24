@@ -62,14 +62,15 @@ func TestBuildGoldenImage_CommandSequence(t *testing.T) {
 	recs := goldenMockRunner(t)
 
 	cfg := BuildGoldenConfig{
-		ImagesDir:    dir,
-		BaseURL:      "https://example.com/images/base.qcow2",
-		BaseChecksum: checksum,
-		BaseFilename: "base.qcow2",
-		GoldenName:   "golden.qcow2",
-		RootDiskGB:   8,
-		Packages:     []string{"python3", "curl", "git"},
-		VMUser:       "claude",
+		ImagesDir:     dir,
+		BaseURL:       "https://example.com/images/base.qcow2",
+		BaseChecksum:  checksum,
+		BaseFilename:  "base.qcow2",
+		GoldenName:    "golden.qcow2",
+		RootDiskGB:    8,
+		Packages:      []string{"python3", "curl", "git"},
+		VMUser:        "claude",
+		ClaudeChannel: "stable",
 	}
 
 	if err := BuildGoldenImage(cfg); err != nil {
@@ -97,14 +98,15 @@ func TestBuildGoldenImage_VirtCustomizeArgs(t *testing.T) {
 	recs := goldenMockRunner(t)
 
 	cfg := BuildGoldenConfig{
-		ImagesDir:    dir,
-		BaseURL:      "https://example.com/base.qcow2",
-		BaseChecksum: checksum,
-		BaseFilename: "base.qcow2",
-		GoldenName:   "golden.qcow2",
-		RootDiskGB:   8,
-		Packages:     []string{"python3", "curl", "git"},
-		VMUser:       "claude",
+		ImagesDir:     dir,
+		BaseURL:       "https://example.com/base.qcow2",
+		BaseChecksum:  checksum,
+		BaseFilename:  "base.qcow2",
+		GoldenName:    "golden.qcow2",
+		RootDiskGB:    8,
+		Packages:      []string{"python3", "curl", "git"},
+		VMUser:        "claude",
+		ClaudeChannel: "stable",
 	}
 
 	if err := BuildGoldenImage(cfg); err != nil {
@@ -125,8 +127,8 @@ func TestBuildGoldenImage_VirtCustomizeArgs(t *testing.T) {
 
 	args := strings.Join(vcArgs, " ")
 
-	// Packages should include user-specified + nodejs + npm
-	if !strings.Contains(args, "--install python3,curl,git,nodejs,npm") {
+	// Packages should include user-specified + nodejs + npm + claude-code
+	if !strings.Contains(args, "--install python3,curl,git,nodejs,npm,claude-code") {
 		t.Errorf("missing expected --install args in: %s", args)
 	}
 
@@ -140,9 +142,9 @@ func TestBuildGoldenImage_VirtCustomizeArgs(t *testing.T) {
 		t.Errorf("missing growpart in: %s", args)
 	}
 
-	// Should have claude-code install
-	if !strings.Contains(args, "npm install -g @anthropic-ai/claude-code") {
-		t.Errorf("missing claude-code install in: %s", args)
+	// Claude Code comes from the signed apt repo, never from npm
+	if strings.Contains(args, "npm install") {
+		t.Errorf("unexpected npm install in: %s", args)
 	}
 }
 
@@ -152,14 +154,15 @@ func TestBuildGoldenImage_ResizeArg(t *testing.T) {
 	recs := goldenMockRunner(t)
 
 	cfg := BuildGoldenConfig{
-		ImagesDir:    dir,
-		BaseURL:      "https://example.com/base.qcow2",
-		BaseChecksum: checksum,
-		BaseFilename: "base.qcow2",
-		GoldenName:   "golden.qcow2",
-		RootDiskGB:   16,
-		Packages:     []string{"git"},
-		VMUser:       "claude",
+		ImagesDir:     dir,
+		BaseURL:       "https://example.com/base.qcow2",
+		BaseChecksum:  checksum,
+		BaseFilename:  "base.qcow2",
+		GoldenName:    "golden.qcow2",
+		RootDiskGB:    16,
+		Packages:      []string{"git"},
+		VMUser:        "claude",
+		ClaudeChannel: "stable",
 	}
 
 	if err := BuildGoldenImage(cfg); err != nil {
@@ -202,14 +205,15 @@ func TestBuildGoldenImage_VMUserValidation(t *testing.T) {
 			goldenMockRunner(t)
 
 			cfg := BuildGoldenConfig{
-				ImagesDir:    dir,
-				BaseURL:      "https://example.com/base.qcow2",
-				BaseChecksum: checksum,
-				BaseFilename: "base.qcow2",
-				GoldenName:   "golden.qcow2",
-				RootDiskGB:   8,
-				Packages:     []string{"git"},
-				VMUser:       tt.vmUser,
+				ImagesDir:     dir,
+				BaseURL:       "https://example.com/base.qcow2",
+				BaseChecksum:  checksum,
+				BaseFilename:  "base.qcow2",
+				GoldenName:    "golden.qcow2",
+				RootDiskGB:    8,
+				Packages:      []string{"git"},
+				VMUser:        tt.vmUser,
+				ClaudeChannel: "stable",
 			}
 
 			err := BuildGoldenImage(cfg)
@@ -232,14 +236,15 @@ func TestBuildGoldenImage_CleansUpOnError(t *testing.T) {
 	})
 
 	cfg := BuildGoldenConfig{
-		ImagesDir:    dir,
-		BaseURL:      "https://example.com/base.qcow2",
-		BaseChecksum: checksum,
-		BaseFilename: "base.qcow2",
-		GoldenName:   "golden.qcow2",
-		RootDiskGB:   8,
-		Packages:     []string{"git"},
-		VMUser:       "claude",
+		ImagesDir:     dir,
+		BaseURL:       "https://example.com/base.qcow2",
+		BaseChecksum:  checksum,
+		BaseFilename:  "base.qcow2",
+		GoldenName:    "golden.qcow2",
+		RootDiskGB:    8,
+		Packages:      []string{"git"},
+		VMUser:        "claude",
+		ClaudeChannel: "stable",
 	}
 
 	err := BuildGoldenImage(cfg)
@@ -412,26 +417,27 @@ func TestBuildGoldenImage_EmptyPackages(t *testing.T) {
 	recs := goldenMockRunner(t)
 
 	cfg := BuildGoldenConfig{
-		ImagesDir:    dir,
-		BaseURL:      "https://example.com/base.qcow2",
-		BaseChecksum: checksum,
-		BaseFilename: "base.qcow2",
-		GoldenName:   "golden.qcow2",
-		RootDiskGB:   8,
-		Packages:     []string{},
-		VMUser:       "claude",
+		ImagesDir:     dir,
+		BaseURL:       "https://example.com/base.qcow2",
+		BaseChecksum:  checksum,
+		BaseFilename:  "base.qcow2",
+		GoldenName:    "golden.qcow2",
+		RootDiskGB:    8,
+		Packages:      []string{},
+		VMUser:        "claude",
+		ClaudeChannel: "stable",
 	}
 
 	if err := BuildGoldenImage(cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// virt-customize --install should still have nodejs,npm
+	// virt-customize --install should still have nodejs,npm,claude-code
 	for _, rec := range *recs {
 		if rec.name == "virt-customize" {
 			args := strings.Join(rec.args, " ")
-			if !strings.Contains(args, "--install nodejs,npm") {
-				t.Errorf("empty packages should still install nodejs,npm, got: %s", args)
+			if !strings.Contains(args, "--install nodejs,npm,claude-code") {
+				t.Errorf("empty packages should still install nodejs,npm,claude-code, got: %s", args)
 			}
 			return
 		}
@@ -454,14 +460,15 @@ func TestBuildGoldenImage_GuestfishFailure(t *testing.T) {
 	})
 
 	cfg := BuildGoldenConfig{
-		ImagesDir:    dir,
-		BaseURL:      "https://example.com/base.qcow2",
-		BaseChecksum: checksum,
-		BaseFilename: "base.qcow2",
-		GoldenName:   "golden.qcow2",
-		RootDiskGB:   8,
-		Packages:     []string{"git"},
-		VMUser:       "claude",
+		ImagesDir:     dir,
+		BaseURL:       "https://example.com/base.qcow2",
+		BaseChecksum:  checksum,
+		BaseFilename:  "base.qcow2",
+		GoldenName:    "golden.qcow2",
+		RootDiskGB:    8,
+		Packages:      []string{"git"},
+		VMUser:        "claude",
+		ClaudeChannel: "stable",
 	}
 
 	err := BuildGoldenImage(cfg)
