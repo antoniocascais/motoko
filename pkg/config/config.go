@@ -59,6 +59,15 @@ type VMDefaults struct {
 	Timezone       string `yaml:"timezone"`
 }
 
+// Paths that the golden image build (pkg/vm) and the per-instance cloud-init
+// config (pkg/cloudinit) must agree on.
+const (
+	// SeedDir holds the Claude Code plugin seed baked into the golden image.
+	SeedDir = "/opt/claude-seed"
+	// BunPath is the bun executable baked into the golden image.
+	BunPath = "/usr/local/bin/bun"
+)
+
 func DefaultConfig() *Config {
 	return &Config{
 		ImagesDir:    "/var/lib/libvirt/images/motoko",

@@ -24,7 +24,7 @@ Non-negotiable — violating any of these is a critical bug:
 - NEVER use `sh -c` or string interpolation for shell commands. Instance names are user input — always use `os/exec` with explicit arg lists.
 - NEVER modify the golden base image at runtime. Rebuilds create a new qcow2 overlay.
 - VMs have no DNS. All egress routes through tinyproxy on the host. Do not add DNS config to cloud-init or networking setup.
-- cloud-init is the ONLY provisioning vector for system-level config (packages, networking, systemd units, DNS disable, proxy setup). No SSH-based config management post-boot. Post-boot SSH is expected for: (a) Claude Code setup that can't be automated (claude login, plugin install, telegram setup), and (b) runtime interaction (logs, inject, tmux).
+- Policy split: the golden build installs software only (packages, bun, the plugin seed) and carries nothing per-instance or secret. cloud-init is the ONLY vector for configuration (managed settings, plugin enablement, token, networking, systemd units, DNS disable, proxy setup). No SSH-based config management post-boot. Post-boot SSH is expected for: (a) interactive logins that can't be automated (claude login, Telegram pairing), and (b) runtime interaction (logs, inject, tmux).
 
 ## Non-Obvious Constraints
 
