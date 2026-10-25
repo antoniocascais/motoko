@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -52,11 +53,11 @@ const (
 type BuildGoldenConfig struct {
 	ImagesDir    string
 	BaseURL      string
-	BaseChecksum string   // "" = fetch SHA512SUMS dynamically
+	BaseChecksum string // "" = fetch SHA512SUMS dynamically
 	BaseFilename string
 	GoldenName   string
 	RootDiskGB   int
-	Packages     []string // nodejs, npm, claude-code appended automatically
+	Packages     []string // git and claude-code are appended automatically if absent
 	VMUser       string
 	// ClaudeChannel is the apt suite ("stable" or "latest") Claude Code is installed from.
 	ClaudeChannel string
@@ -103,6 +104,14 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 		return fmt.Errorf("downloading base image: %w", err)
 	}
 
+	// Fetched and verified before the bake starts: a bad download must not cost
+	// minutes of building, and must leave the existing golden untouched.
+	bunPath, err := fetchBun(cfg.ImagesDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(bunPath) }()
+
 	tmpPath := filepath.Join(cfg.ImagesDir, fmt.Sprintf(".golden-bake-%d.qcow2", time.Now().Unix()))
 	cleanup := true
 	defer func() {
@@ -125,10 +134,10 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 	}
 	defer func() { _ = os.Remove(keyPath) }()
 
-	// nodejs/npm are no longer needed by Claude Code (a self-contained binary from
-	// Anthropic's signed apt repo); they stay for the Telegram plugin's dependency
-	// install.
-	packages := append(append([]string{}, cfg.Packages...), "nodejs", "npm", "claude-code")
+	// Claude Code is a self-contained binary and the Telegram plugin's
+	// dependencies are installed by bun, so no Node.js is needed. git is required
+	// by claude's marketplace clone during the seed.
+	packages := withPackages(cfg.Packages, "git", "claude-code")
 	// The keyring and source entry must exist before --update so apt indexes the
 	// repo and verifies its signature with that key only (signed-by), never via
 	// apt's global trust.
@@ -151,6 +160,10 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 	if cfg.ClaudeVersion != "" {
 		args = append(args, "--run-command", claudeVersionCheck(cfg.ClaudeVersion))
 	}
+	// Software only: bun and the plugin seed are identical for every instance.
+	// All per-instance config (managed settings, tokens, trust) is cloud-init's.
+	args = append(args, bunArgs(bunPath, pinnedBun)...)
+	args = append(args, seedArgs()...)
 	// The source and key are for the bake only. Left in the image, every in-VM
 	// apt-get update would hit a proxy-blocked host, and allowlisting that host
 	// would let apt move claude off the version baked here.
@@ -159,8 +172,28 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 		"--delete", claudeKeyringPath,
 		"--run-command", fmt.Sprintf("useradd -m -s /bin/bash %s", cfg.VMUser),
 	)
-	if _, _, err := runCmd("virt-customize", libvirtArgs(args...)...); err != nil {
+	_, stderr, err := runCmd("virt-customize", libvirtArgs(args...)...)
+	// virt-customize shows a command's output only when the command fails, so
+	// the seed's info lines are read back from the image, success or not.
+	info, infoErr := readSeedInfo(tmpPath)
+	if infoErr == nil {
+		logSeedLines(info)
+	}
+	if err != nil {
+		step := failedSeedStep(stderr + "\n" + err.Error())
+		if step == "" && infoErr == nil {
+			step = failedSeedStep(info)
+		}
+		if step != "" {
+			return fmt.Errorf("customizing image: golden seed step %q failed: %w", step, err)
+		}
 		return fmt.Errorf("customizing image: %w", err)
+	}
+	if infoErr != nil {
+		return fmt.Errorf("reading seed info from the image: %w", infoErr)
+	}
+	if err := scrubBakeArtifacts(tmpPath); err != nil {
+		return fmt.Errorf("removing build logs from the image: %w", err)
 	}
 
 	if _, _, err := runCmd("guestfish", "-a", tmpPath, "run", ":", "e2fsck-f", "/dev/sda1"); err != nil {
@@ -189,6 +222,17 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 	}
 
 	return nil
+}
+
+// withPackages returns base plus any of extra not already listed, in order.
+func withPackages(base []string, extra ...string) []string {
+	out := append([]string{}, base...)
+	for _, e := range extra {
+		if !slices.Contains(out, e) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // writeClaudeKey writes the embedded signing key, dearmored, to a temp file for

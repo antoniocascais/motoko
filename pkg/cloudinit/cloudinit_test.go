@@ -294,9 +294,9 @@ func TestRenderUserData_DisablesDNS(t *testing.T) {
 
 func TestRenderUserData_TelegramToken(t *testing.T) {
 	output := renderUserData(t, testParams(t))
-	count := strings.Count(output, "TELEGRAM_BOT_TOKEN="+testToken)
-	if count != 2 {
-		t.Errorf("telegram token should appear in exactly 2 locations, found %d", count)
+	count := strings.Count(output, testToken)
+	if count != 1 {
+		t.Errorf("telegram token should appear in exactly 1 location (the 0600 service env file), found %d", count)
 	}
 }
 
@@ -427,12 +427,12 @@ func TestRenderUserData_PersonaWithYAMLSpecialChars(t *testing.T) {
 
 func TestRenderUserData_WriteFilesCount(t *testing.T) {
 	output := renderUserData(t, testParams(t))
-	// Expected: sysctl, apt proxy, environment, hosts, systemd service,
-	// telegram .env, claude-env, bash_aliases, CLAUDE.md, claude-restart.sh,
-	// claude-run.sh, cmd-queue.sh
+	// Expected: sysctl, apt proxy, environment, managed settings, claude.json,
+	// hosts, systemd service, claude-env, bash_aliases, CLAUDE.md,
+	// claude-restart.sh, claude-run.sh, cmd-queue.sh
 	count := strings.Count(output, "  - path: /")
-	if count != 12 {
-		t.Errorf("write_files should have 12 entries, got %d", count)
+	if count != 13 {
+		t.Errorf("write_files should have 13 entries, got %d", count)
 	}
 }
 
@@ -648,12 +648,10 @@ func TestRenderUserData_NoTelegram_AliasWithoutChannels(t *testing.T) {
 
 func TestRenderUserData_NoTelegram_WriteFilesCount(t *testing.T) {
 	output := renderUserData(t, testParamsNoTelegram(t))
-	// Without telegram: sysctl, apt proxy, environment, hosts, systemd service,
-	// claude-env (proxy only), bash_aliases, CLAUDE.md, claude-restart.sh, claude-run.sh,
-	// cmd-queue.sh = 11 (telegram .env is the only one dropped)
+	// The same set as with telegram: the toggle only changes file contents.
 	count := strings.Count(output, "  - path: /")
-	if count != 11 {
-		t.Errorf("write_files without telegram should have 11 entries, got %d", count)
+	if count != 13 {
+		t.Errorf("write_files without telegram should have 13 entries, got %d", count)
 	}
 }
 

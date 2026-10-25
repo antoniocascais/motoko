@@ -19,6 +19,14 @@ write_files:
     content: |
       Acquire::http::Proxy "{{ .ProxyURL }}";
       Acquire::https::Proxy "{{ .ProxyURL }}";
+{{/*
+  LOAD-BEARING: TELEGRAM_BOT_TOKEN goes ONLY in ~/.claude-env (0600, service
+  EnvironmentFile), never in /etc/environment, managed settings, the alias or a
+  state-dir dotenv file. Managed settings enable the telegram plugin for every
+  claude session, so an interactive session spawns server.ts too. Without a
+  token it exits at the token check, before the PID guard that SIGTERMs the
+  running poller. With the token in an interactive shell it would steal the bot.
+*/}}
   - path: /etc/environment
     content: |
       https_proxy={{ .ProxyURL }}
@@ -27,6 +35,16 @@ write_files:
       HTTP_PROXY={{ .ProxyURL }}
       no_proxy=localhost,127.0.0.1
       DISABLE_UPDATES=1
+{{ if .TelegramBotToken }}      CLAUDE_CODE_PLUGIN_SEED_DIR={{ .SeedDir }}
+      TELEGRAM_STATE_DIR={{ .TelegramStateDir }}
+{{ end }}  - path: /etc/claude-code/managed-settings.json
+    permissions: "0644"
+    content: |
+{{ indent 6 .ManagedSettings }}
+  - path: /home/{{ .VMUser }}/.claude.json
+    permissions: "0600"
+    content: |
+{{ indent 6 .ClaudeJSON }}
   - path: /etc/hosts
     content: |
       127.0.0.1 localhost
@@ -42,8 +60,12 @@ write_files:
       [Service]
       Type=forking
       WorkingDirectory=/home/{{ .VMUser }}/data
+      # Type=forking around `tmux new-session -d` masks claude's exit codes (systemd
+      # only sees the tmux server leave with 0), so "cannot start" guards inside the
+      # pane would restart-loop under Restart=always. A failed ExecCondition skips
+      # the start instead, and systemd never restarts a skipped start.
+      ExecCondition=/home/{{ .VMUser }}/bin/claude-run.sh --preflight
       ExecStart=/usr/bin/tmux new-session -d -s claude '/home/{{ .VMUser }}/bin/claude-run.sh --dangerously-skip-permissions{{ if .TelegramBotToken }} --channels plugin:telegram@claude-plugins-official{{ end }}'
-      ExecStartPost=-/bin/bash -c 'sleep 5 && /usr/bin/tmux send-keys -t claude Enter && sleep 3 && /usr/bin/tmux send-keys -t claude Enter'
       ExecStop=-/usr/bin/tmux kill-session -t claude
       Restart=always
       RestartSec=10
@@ -51,20 +73,18 @@ write_files:
 
       [Install]
       WantedBy=default.target
-{{ if .TelegramBotToken }}  - path: /home/{{ .VMUser }}/.claude/channels/telegram/.env
-    permissions: "0600"
-    content: |
-      TELEGRAM_BOT_TOKEN={{ .TelegramBotToken }}
-{{ end }}  - path: /home/{{ .VMUser }}/.claude-env
+  - path: /home/{{ .VMUser }}/.claude-env
     permissions: "0600"
     content: |
 {{ if .TelegramBotToken }}      TELEGRAM_BOT_TOKEN={{ .TelegramBotToken }}
+      CLAUDE_CODE_PLUGIN_SEED_DIR={{ .SeedDir }}
+      TELEGRAM_STATE_DIR={{ .TelegramStateDir }}
 {{ end }}      https_proxy={{ .ProxyURL }}
       HTTPS_PROXY={{ .ProxyURL }}
       DISABLE_UPDATES=1
   - path: /home/{{ .VMUser }}/.bash_aliases
     content: |
-      alias claude='/usr/bin/claude --dangerously-skip-permissions{{ if .TelegramBotToken }} --channels plugin:telegram@claude-plugins-official{{ end }}'
+      alias claude='/usr/bin/claude --dangerously-skip-permissions'
   - path: /home/{{ .VMUser }}/CLAUDE.md
     content: |
 {{ indent 6 .ClaudeMD }}
@@ -107,7 +127,11 @@ runcmd:
   - rm -f /home/{{ .VMUser }}/data/CLAUDE.md
   - rm -f /home/{{ .VMUser }}/data/.bashrc
   - rm -f /home/{{ .VMUser }}/data/.profile
-  - chown -R {{ .VMUser }}:{{ .VMUser }} /home/{{ .VMUser }}
+  - install -d -o {{ .VMUser }} -g {{ .VMUser }} /home/{{ .VMUser }}/data/memory
+  - install -d -o {{ .VMUser }} -g {{ .VMUser }} {{ .MemoryLinkDir }}
+  - test -e {{ .MemoryLink }} || test -L {{ .MemoryLink }} || ln -s /home/{{ .VMUser }}/data/memory {{ .MemoryLink }}
+{{ if .TelegramBotToken }}  - install -d -m 0700 -o {{ .VMUser }} -g {{ .VMUser }} {{ .TelegramStateDir }}
+{{ end }}  - chown -R {{ .VMUser }}:{{ .VMUser }} /home/{{ .VMUser }}
   - loginctl enable-linger {{ .VMUser }}
   - sleep 2
   - sudo -u {{ .VMUser }} XDG_RUNTIME_DIR=/run/user/$(id -u {{ .VMUser }}) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u {{ .VMUser }})/bus systemctl --user daemon-reload

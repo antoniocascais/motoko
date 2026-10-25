@@ -3,10 +3,12 @@ package cloudinit
 import (
 	"bytes"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/template"
 
@@ -34,6 +36,52 @@ type InstanceParams struct {
 	ClaudeRestartSh   string
 	ClaudeRunSh       string
 	CmdQueueSh        string
+
+	// SeedDir is the plugin seed baked into the golden image.
+	SeedDir string
+	// TelegramStateDir is the plugin's state (access allowlist, inbox) on the
+	// data disk, so pairing survives a rebuild.
+	TelegramStateDir string
+	// ManagedSettings and ClaudeJSON are the rendered JSON bodies of
+	// /etc/claude-code/managed-settings.json and ~/.claude.json.
+	ManagedSettings string
+	ClaudeJSON      string
+	// MemoryLink is claude's auto-memory dir for the data dir project; it is a
+	// symlink to ~/data/memory so memory survives a rebuild. MemoryLinkDir is
+	// its parent.
+	MemoryLink    string
+	MemoryLinkDir string
+}
+
+// telegramPlugin is the plugin id the golden seed provides and channels loads.
+const telegramPlugin = "telegram@claude-plugins-official"
+
+// projectSlugRE matches the characters claude replaces with "-" when it names a
+// project's directory under ~/.claude/projects.
+var projectSlugRE = regexp.MustCompile(`[^a-zA-Z0-9]`)
+
+// managedSettings renders /etc/claude-code/managed-settings.json. It holds
+// nothing secret and nothing instance-specific beyond the Telegram toggle.
+func managedSettings(telegram bool) (string, error) {
+	m := map[string]any{"skipDangerousModePermissionPrompt": true}
+	if telegram {
+		m["enabledPlugins"] = map[string]bool{telegramPlugin: true}
+	}
+	b, err := json.MarshalIndent(m, "", "  ")
+	return string(b) + "\n", err
+}
+
+// claudeJSON renders ~/.claude.json: onboarding done and the working directory
+// trusted, so the first start shows no prompt a blind keypress could answer wrong.
+func claudeJSON(dataDir string) (string, error) {
+	m := map[string]any{
+		"hasCompletedOnboarding": true,
+		"projects": map[string]any{
+			dataDir: map[string]any{"hasTrustDialogAccepted": true},
+		},
+	}
+	b, err := json.MarshalIndent(m, "", "  ")
+	return string(b) + "\n", err
 }
 
 const (
@@ -79,7 +127,25 @@ func NewInstanceParams(cfg *config.Config, name, hostname, telegramToken string,
 		return nil, fmt.Errorf("rendering CLAUDE.md: %w", err)
 	}
 
-	scriptData := struct{ VMUser string }{VMUser: cfg.VMUser}
+	telegram := telegramToken != ""
+	scriptData := struct {
+		VMUser   string
+		Telegram bool
+		BunPath  string
+		SeedDir  string
+	}{cfg.VMUser, telegram, config.BunPath, config.SeedDir}
+
+	home := "/home/" + cfg.VMUser
+	dataDir := home + "/data"
+	settings, err := managedSettings(telegram)
+	if err != nil {
+		return nil, fmt.Errorf("rendering managed settings: %w", err)
+	}
+	claudeJSONBody, err := claudeJSON(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("rendering .claude.json: %w", err)
+	}
+	memoryLinkDir := home + "/.claude/projects/" + projectSlugRE.ReplaceAllString(dataDir, "-")
 
 	restartSh, err := renderEmbedded(scriptFS, tmplClaudeRestart, scriptData)
 	if err != nil {
@@ -110,6 +176,12 @@ func NewInstanceParams(cfg *config.Config, name, hostname, telegramToken string,
 		ClaudeRestartSh:   restartSh,
 		ClaudeRunSh:       runSh,
 		CmdQueueSh:        queueSh,
+		SeedDir:           config.SeedDir,
+		TelegramStateDir:  dataDir + "/telegram",
+		ManagedSettings:   settings,
+		ClaudeJSON:        claudeJSONBody,
+		MemoryLink:        memoryLinkDir + "/memory",
+		MemoryLinkDir:     memoryLinkDir,
 	}, nil
 }
 

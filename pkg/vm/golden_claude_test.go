@@ -46,13 +46,16 @@ func claudeBuild(t *testing.T, channel, version string) (argv []string, keyConte
 			_ = os.WriteFile(args[len(args)-1], []byte("fake"), 0644)
 		case name == "qemu-img" && len(args) > 0 && args[0] == "info":
 			return `{"format": "qcow2"}`, "", nil
-		case name == "virt-customize":
+		case name == "virt-customize" && argv == nil:
 			argv = append([]string{}, args...)
 			for i, a := range argv {
-				if i > 0 && argv[i-1] == "--upload" {
+				if i > 0 && argv[i-1] == "--upload" && strings.HasSuffix(a, ":"+claudeKeyringPath) {
 					keyPath = strings.TrimSuffix(a, ":"+claudeKeyringPath)
 					keyContent, _ = os.ReadFile(keyPath)
 					argv[i] = "<key>:" + claudeKeyringPath
+				}
+				if i > 0 && argv[i-1] == "--upload" && strings.HasSuffix(a, ":"+bunGuestPath) {
+					argv[i] = "<bun>:" + bunGuestPath
 				}
 				if i > 0 && argv[i-1] == "-a" {
 					if !strings.HasPrefix(filepath.Base(a), ".golden-bake-") {
@@ -83,6 +86,20 @@ func claudeBuild(t *testing.T, channel, version string) (argv []string, keyConte
 	return argv, keyContent, keyPath
 }
 
+// expandSeedPlaceholder splices the seed steps in for the "--SEED" marker; the
+// seed's own exact content is asserted in golden_seed_test.go.
+func expandSeedPlaceholder(want []string) []string {
+	var out []string
+	for _, a := range want {
+		if a == "--SEED" {
+			out = append(out, seedArgs()...)
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 func TestBuildGoldenImage_ClaudeAptArgs(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -102,7 +119,12 @@ func TestBuildGoldenImage_ClaudeAptArgs(t *testing.T) {
 				"--chmod", "0644:/etc/apt/keyrings/claude-code.gpg",
 				"--write", "/etc/apt/sources.list.d/claude-code.list:deb [signed-by=/etc/apt/keyrings/claude-code.gpg] https://downloads.claude.ai/claude-code/apt/stable stable main\n",
 				"--update",
-				"--install", "git,tmux,nodejs,npm,claude-code",
+				"--install", "git,tmux,claude-code",
+				"--upload", "<bun>:/usr/local/bin/bun",
+				"--chmod", "0755:/usr/local/bin/bun",
+				"--run-command", seedStep("bun-version", bunVersionCheck("/usr/local/bin/bun", "1.4.4")),
+				"--run-command", `echo "motoko-seed bun-version: $(/usr/local/bin/bun --version)" >> /var/tmp/motoko-seed.info`,
+				"--SEED",
 				"--delete", "/etc/apt/sources.list.d/claude-code.list",
 				"--delete", "/etc/apt/keyrings/claude-code.gpg",
 				"--run-command", "useradd -m -s /bin/bash claude",
@@ -122,8 +144,13 @@ func TestBuildGoldenImage_ClaudeAptArgs(t *testing.T) {
 				"--write", "/etc/apt/sources.list.d/claude-code.list:deb [signed-by=/etc/apt/keyrings/claude-code.gpg] https://downloads.claude.ai/claude-code/apt/latest latest main\n",
 				"--write", "/etc/apt/preferences.d/claude-code:Package: claude-code\nPin: version 2.1.310-*\nPin-Priority: 1001\n",
 				"--update",
-				"--install", "git,tmux,nodejs,npm,claude-code",
+				"--install", "git,tmux,claude-code",
 				"--run-command", claudeVersionCheck("2.1.310"),
+				"--upload", "<bun>:/usr/local/bin/bun",
+				"--chmod", "0755:/usr/local/bin/bun",
+				"--run-command", seedStep("bun-version", bunVersionCheck("/usr/local/bin/bun", "1.4.4")),
+				"--run-command", `echo "motoko-seed bun-version: $(/usr/local/bin/bun --version)" >> /var/tmp/motoko-seed.info`,
+				"--SEED",
 				"--delete", "/etc/apt/sources.list.d/claude-code.list",
 				"--delete", "/etc/apt/keyrings/claude-code.gpg",
 				"--run-command", "useradd -m -s /bin/bash claude",
@@ -133,8 +160,9 @@ func TestBuildGoldenImage_ClaudeAptArgs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			argv, _, _ := claudeBuild(t, tt.channel, tt.version)
-			if !reflect.DeepEqual(argv, tt.want) {
-				t.Errorf("virt-customize argv mismatch\ngot:  %q\nwant: %q", argv, tt.want)
+			want := expandSeedPlaceholder(tt.want)
+			if !reflect.DeepEqual(argv, want) {
+				t.Errorf("virt-customize argv mismatch\ngot:  %q\nwant: %q", argv, want)
 			}
 		})
 	}
@@ -164,7 +192,7 @@ func TestBuildGoldenImage_ClaudeKeyRemovedOnFailure(t *testing.T) {
 		}
 		if name == "virt-customize" {
 			for i, a := range args {
-				if i > 0 && args[i-1] == "--upload" {
+				if i > 0 && args[i-1] == "--upload" && strings.HasSuffix(a, ":"+claudeKeyringPath) {
 					keyPath = strings.TrimSuffix(a, ":"+claudeKeyringPath)
 				}
 			}

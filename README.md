@@ -63,7 +63,8 @@ git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 systemctl --user restart claude-assistant.service
 ```
 
-To set up the Telegram bot plugin, see [docs/telegram-plugin-setup.md](docs/telegram-plugin-setup.md).
+The assistant runs in a tmux session: SSH in and run `tmux attach -t claude` for interactive use.
+The Telegram plugin is pre-installed; to log in and pair your account, see [docs/telegram-plugin-setup.md](docs/telegram-plugin-setup.md).
 
 ## Commands
 
@@ -183,11 +184,38 @@ motoko rebuild my-agent
 If the assistant keeps dying, `motoko logs <name>` shows `~/data/claude-exit.log` once the tmux
 session is gone: one record per exit, with the exit status and claude's last screen.
 
+## What the golden image bakes
+
+`motoko build` installs software only, nothing per-instance or secret:
+
+- apt packages (`git`, `tmux`, `claude-code` from the signed repo, plus `golden_image.packages`)
+- `bun` at `/usr/local/bin/bun`: pinned version and zip sha256 in `pkg/vm/golden_seed.go` (`pinnedBun`), downloaded and verified on the host, never in the VM
+- the Telegram plugin seed at `/opt/claude-seed` (root-owned, read-only), installed with `claude plugin marketplace add` and `claude plugin install` inside the build appliance
+
+cloud-init owns all per-instance config: managed settings, the plugin enablement, the token, state directories. Manual: `claude login` and Telegram pairing.
+
+### Bumping the pins
+
+**bun:** pick a release, verify its `SHASUMS256.txt.asc` signature against the Bun release key (fingerprint `F3DC C08A 8572 C074 9B3E  1888 8EAB 4D40 A7B2 2B59`, use an isolated `GNUPGHOME`), then copy the `bun-linux-x64-baseline.zip` line's sha256 and the version into `pinnedBun`.
+
+**Telegram plugin:** the marketplace commit cannot be pinned through the CLI, so the build pins the plugin directory content instead. The bake fails (golden untouched) unless the installed plugin directory, outside `node_modules`, matches `pkg/vm/seed/telegram-plugin.sha256` exactly. After reviewing an upstream plugin change, regenerate the manifest and set `telegramPluginVersion`:
+
+```bash
+python3 -I pkg/vm/seed/gen-telegram-manifest.py anthropics/claude-plugins-official <commit> external_plugins/telegram \
+  > pkg/vm/seed/telegram-plugin.sha256
+```
+
+Run it from the repo root with an authenticated `gh`. For the current pin the invocation is `... anthropics/claude-plugins-official 1e96c6b0a0f06cad576086243f3d06397c4ddf44 external_plugins/telegram`.
+
+**Also re-check on every plugin bump:** in the new `server.ts`, the exit on a missing bot token must still come BEFORE the PID guard that stops an already-running poller. Managed settings enable the plugin for every `claude` session, and interactive shells have no token, so that ordering is the only thing stopping an interactive session from taking the bot away from the service. If the order changed, do not bump until the cloud-init split is rethought.
+
+The current manifest was generated from upstream commit `1e96c6b0a0f06cad576086243f3d06397c4ddf44`. `node_modules` is covered by the plugin's frozen `bun.lock`. The marketplace commit actually installed is printed in the build output (`motoko-seed marketplace-commit`) but not enforced.
+
 ## Security model
 
 - VMs have no DNS. You control egress through the host proxy's domain allowlist.
 - Instance names are user input. All shell commands use `exec.Command` with explicit arg lists, no `sh -c`.
-- cloud-init provisions the full system. Post-boot SSH is for operator interaction only, not configuration.
+- The golden image holds software only; cloud-init provisions all per-instance config. Post-boot SSH is for login, pairing and operator interaction, not configuration.
 - Each rebuild creates a fresh overlay from the golden image. The golden image is read-only.
 - cloud-init ISOs contain the Telegram bot token and are `chmod 0600`.
 - Each instance's SSH host keys are pinned at create time (`instances/<name>/known_hosts`), captured over the authenticated connection once identity is already proven by the static IP reservation, hostname assert, and key auth — then enforced on every later `ssh`/`inject`/`logs`. A changed host key (a different VM answering at that IP) fails closed. `rebuild` re-pins, since a fresh overlay regenerates the guest keys.

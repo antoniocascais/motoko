@@ -86,7 +86,7 @@ func TestBuildGoldenImage_CommandSequence(t *testing.T) {
 			got[i] += " " + r.args[0]
 		}
 	}
-	want := []string{"cp", "qemu-img resize", "virt-customize", "guestfish", "qemu-img info"}
+	want := []string{"cp", "qemu-img resize", "virt-customize", "virt-cat", "virt-customize", "guestfish", "qemu-img info"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("commands = %v, want %v", got, want)
 	}
@@ -127,8 +127,8 @@ func TestBuildGoldenImage_VirtCustomizeArgs(t *testing.T) {
 
 	args := strings.Join(vcArgs, " ")
 
-	// Packages should include user-specified + nodejs + npm + claude-code
-	if !strings.Contains(args, "--install python3,curl,git,nodejs,npm,claude-code") {
+	// Packages should include user-specified + claude-code; no Node.js
+	if !strings.Contains(args, "--install python3,curl,git,claude-code") {
 		t.Errorf("missing expected --install args in: %s", args)
 	}
 
@@ -432,12 +432,12 @@ func TestBuildGoldenImage_EmptyPackages(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// virt-customize --install should still have nodejs,npm,claude-code
+	// virt-customize --install should still have git (needed by the plugin seed) and claude-code
 	for _, rec := range *recs {
 		if rec.name == "virt-customize" {
 			args := strings.Join(rec.args, " ")
-			if !strings.Contains(args, "--install nodejs,npm,claude-code") {
-				t.Errorf("empty packages should still install nodejs,npm,claude-code, got: %s", args)
+			if !strings.Contains(args, "--install git,claude-code") {
+				t.Errorf("empty packages should still install git,claude-code, got: %s", args)
 			}
 			return
 		}

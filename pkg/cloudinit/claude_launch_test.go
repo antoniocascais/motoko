@@ -65,7 +65,9 @@ func TestRenderUserData_ClaudeLaunchPaths(t *testing.T) {
 			}
 
 			aliases, _ := writeFile(t, output, "/home/claude/.bash_aliases")
-			wantAlias := "alias claude='/usr/bin/claude" + tt.flags + "'\n"
+			// An interactive session with --channels would take the bot from the
+			// service's poller; interactive use attaches to the service's tmux.
+			wantAlias := "alias claude='/usr/bin/claude --dangerously-skip-permissions'\n"
 			if aliases != wantAlias {
 				t.Errorf("alias:\ngot:  %q\nwant: %q", aliases, wantAlias)
 			}
@@ -77,12 +79,15 @@ func TestRenderUserData_ClaudeLaunchPaths(t *testing.T) {
 	}
 }
 
-// A dead tmux session must not turn the keystroke step into the reported
-// failure; systemd's "-" prefix ignores its exit status.
-func TestRenderUserData_ExecStartPostTolerant(t *testing.T) {
-	line := unitLine(t, renderUserData(t, testParams(t)), "ExecStartPost=")
-	if !strings.HasPrefix(line, "ExecStartPost=-/bin/bash ") {
-		t.Errorf("ExecStartPost lacks the - prefix: %s", line)
+// The blind Enter presses answered whatever prompt appeared first, and picked
+// "No, exit" on the folder-trust dialog. Prompts are pre-answered in config now.
+func TestRenderUserData_NoBlindKeystrokes(t *testing.T) {
+	for _, params := range []*InstanceParams{testParams(t), testParamsNoTelegram(t)} {
+		output := renderUserData(t, params)
+		unit, _ := writeFile(t, output, "/home/claude/.config/systemd/user/claude-assistant.service")
+		if strings.Contains(unit, "ExecStartPost") || strings.Contains(unit, "send-keys") {
+			t.Error("unit still sends blind keystrokes after start")
+		}
 	}
 }
 
@@ -129,26 +134,61 @@ func TestRenderUserData_ClaudeRunScriptWritten(t *testing.T) {
 	}
 }
 
-// runClaudeRun executes the rendered claude-run.sh with claude and tmux
-// replaced by stubs and the log redirected into dir.
-func runClaudeRun(t *testing.T, dir string, claudeExit string, args ...string) (int, string) {
+// scriptEnv says what exists on the "instance" a claude-run.sh test runs on.
+// setup runs after the stubs are created and may break them (given by path).
+type scriptEnv struct {
+	claude, bun, seed bool
+	setup             func(claudePath, bunPath, seedDir string)
+}
+
+var allPresent = scriptEnv{claude: true, bun: true, seed: true}
+
+// scriptResult is what a claude-run.sh run left behind.
+type scriptResult struct {
+	code       int
+	claudeArgs string // "" = claude was not started
+	log        string // exit log; "" = nothing written
+	tmuxRan    bool
+}
+
+// runScript executes the rendered claude-run.sh for params with claude, bun,
+// the seed and tmux replaced by stubs under dir, and the log redirected there.
+// In --preflight mode PATH holds only the tools the script legitimately needs
+// (no tmux), so a preflight that reached for tmux would fail.
+func runScript(t *testing.T, params *InstanceParams, dir, claudeExit string, env scriptEnv, args ...string) scriptResult {
 	t.Helper()
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("sh not available")
 	}
-	params := testParams(t)
 	stubClaude := filepath.Join(dir, "claude")
 	stubTmux := filepath.Join(dir, "tmux")
+	stubBun := filepath.Join(dir, "bun")
+	seedDir := filepath.Join(dir, "seed")
 	writeStub := func(path, body string) {
 		if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	writeStub(stubClaude, `echo "$@" > "`+filepath.Join(dir, "args")+`"; exit `+claudeExit+"\n")
-	writeStub(stubTmux, "echo FINAL-SCREEN\n")
+	if env.claude {
+		writeStub(stubClaude, `echo "$@" > "`+filepath.Join(dir, "args")+`"; exit `+claudeExit+"\n")
+	}
+	writeStub(stubTmux, `touch "`+filepath.Join(dir, "tmux-ran")+`"; echo FINAL-SCREEN`+"\n")
+	if env.bun {
+		writeStub(stubBun, "exit 0\n")
+	}
+	if env.seed {
+		if err := os.MkdirAll(filepath.Join(seedDir, "cache"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if env.setup != nil {
+		env.setup(stubClaude, stubBun, seedDir)
+	}
 
 	script := params.ClaudeRunSh
+	script = strings.ReplaceAll(script, "/usr/local/bin/bun", stubBun)
+	script = strings.ReplaceAll(script, "/opt/claude-seed", seedDir)
 	script = strings.Replace(script, "/usr/bin/claude", stubClaude, 1)
 	script = strings.Replace(script, "/usr/bin/tmux", stubTmux, 1)
 	script = strings.Replace(script, "/home/claude/data/claude-exit.log", filepath.Join(dir, "exit.log"), 1)
@@ -158,15 +198,43 @@ func runClaudeRun(t *testing.T, dir string, claudeExit string, args ...string) (
 	}
 
 	cmd := exec.Command(sh, append([]string{scriptPath}, args...)...)
+	if len(args) > 0 && args[0] == "--preflight" {
+		bin := filepath.Join(dir, "path")
+		if err := os.MkdirAll(bin, 0755); err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range []string{"date", "stat", "mv", "cat"} {
+			real, err := exec.LookPath(tool)
+			if err != nil {
+				t.Skipf("%s not available", tool)
+			}
+			if err := os.Symlink(real, filepath.Join(bin, tool)); err != nil && !os.IsExist(err) {
+				t.Fatal(err)
+			}
+		}
+		cmd.Env = []string{"PATH=" + bin}
+	}
 	err = cmd.Run()
-	code := 0
+	res := scriptResult{}
 	if exitErr, ok := err.(*exec.ExitError); ok {
-		code = exitErr.ExitCode()
+		res.code = exitErr.ExitCode()
 	} else if err != nil {
 		t.Fatalf("running script: %v", err)
 	}
 	gotArgs, _ := os.ReadFile(filepath.Join(dir, "args"))
-	return code, strings.TrimSpace(string(gotArgs))
+	res.claudeArgs = strings.TrimSpace(string(gotArgs))
+	log, _ := os.ReadFile(filepath.Join(dir, "exit.log"))
+	res.log = string(log)
+	_, statErr := os.Stat(filepath.Join(dir, "tmux-ran"))
+	res.tmuxRan = statErr == nil
+	return res
+}
+
+// runClaudeRun runs claude-run.sh on a healthy instance (telegram on).
+func runClaudeRun(t *testing.T, dir string, claudeExit string, args ...string) (int, string) {
+	t.Helper()
+	res := runScript(t, testParams(t), dir, claudeExit, allPresent, args...)
+	return res.code, res.claudeArgs
 }
 
 func TestClaudeRun_RecordsExit(t *testing.T) {
@@ -191,57 +259,26 @@ func TestClaudeRun_RecordsExit(t *testing.T) {
 	}
 }
 
-// runClaudeRunMissing executes the rendered claude-run.sh with claude absent
-// and the log redirected into dir.
-func runClaudeRunMissing(t *testing.T, dir string) error {
-	t.Helper()
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skip("sh not available")
-	}
-	script := testParams(t).ClaudeRunSh
-	script = strings.Replace(script, "/usr/bin/claude", filepath.Join(dir, "absent"), 1)
-	script = strings.Replace(script, "/home/claude/data/claude-exit.log", filepath.Join(dir, "exit.log"), 1)
-	scriptPath := filepath.Join(dir, "claude-run.sh")
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatal(err)
-	}
-	return exec.Command(sh, scriptPath).Run()
-}
-
-// An instance created from a pre-apt golden image has no /usr/bin/claude; the
-// log must say why rather than leave an unexplained restart loop.
-func TestClaudeRun_MissingBinary(t *testing.T) {
-	dir := t.TempDir()
-	err := runClaudeRunMissing(t, dir)
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 127 {
-		t.Errorf("exit = %v, want status 127", err)
-	}
-	log, _ := os.ReadFile(filepath.Join(dir, "exit.log"))
-	if !strings.Contains(string(log), "predates the apt-based install") {
-		t.Errorf("exit log lacks the golden-image hint:\n%s", log)
-	}
-}
-
-// The missing-binary path is the one an old golden image restart-loops on, so
-// it must honour the size cap too.
-func TestClaudeRun_MissingBinaryRotatesLargeLog(t *testing.T) {
+// The preflight's guard line is what an old golden image writes on every start
+// attempt, so it must honour the size cap too.
+func TestClaudeRun_PreflightRotatesLargeLog(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "exit.log")
 	big := strings.Repeat("x", 1048577)
 	if err := os.WriteFile(logPath, []byte(big), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_ = runClaudeRunMissing(t, dir)
+	res := runScript(t, testParams(t), dir, "0", scriptEnv{bun: true, seed: true}, "--preflight")
+	if res.code == 0 {
+		t.Fatal("preflight passed without claude")
+	}
 
 	rotated, err := os.ReadFile(logPath + ".1")
 	if err != nil || string(rotated) != big {
 		t.Errorf("oversized log not rotated to .1 intact (err: %v)", err)
 	}
-	log, _ := os.ReadFile(logPath)
-	if !strings.Contains(string(log), "predates the apt-based install") || strings.Contains(string(log), "xxx") {
-		t.Errorf("new log should hold only the new record, got %d bytes", len(log))
+	if !strings.Contains(res.log, "predates the apt-based install") || strings.Contains(res.log, "xxx") {
+		t.Errorf("new log should hold only the new record, got %d bytes", len(res.log))
 	}
 }
 

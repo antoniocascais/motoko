@@ -2,6 +2,7 @@
 # Runs Claude Code inside the claude tmux session and records each exit on the
 # data disk, so a crash-looping assistant leaves evidence that survives rebuild.
 # Usage: claude-run.sh [claude args...]
+#        claude-run.sh --preflight
 
 CLAUDE="/usr/bin/claude"
 LOG="/home/{{ .VMUser }}/data/claude-exit.log"
@@ -16,11 +17,26 @@ record() {
     cat >> "$LOG"
 }
 
-# Golden images built before the apt install have claude elsewhere; say so
-# instead of leaving a bare "command not found" restart loop.
-if [ ! -x "$CLAUDE" ]; then
-    echo "=== $(date -Iseconds) $CLAUDE not found: this instance's golden image predates the apt-based install. Build a new golden image and rebuild (README: Updating Claude Code)." | record
-    exit 127
+# --preflight is the unit's ExecCondition: it decides, outside tmux, whether this
+# instance can start at all. The unit is Type=forking around `tmux new-session -d`,
+# so systemd only sees the tmux server's status; an exit code from this script
+# inside the pane is invisible to it and Restart=always would loop on a broken
+# image. A failed condition makes systemd skip the start and not restart it.
+# The checks live here, once, next to the launch they protect.
+if [ "$1" = "--preflight" ]; then
+    # Golden images built before the apt install have claude elsewhere; say so
+    # instead of leaving a bare "command not found" restart loop.
+    if [ ! -x "$CLAUDE" ]; then
+        echo "=== $(date -Iseconds) $CLAUDE not found: this instance's golden image predates the apt-based install. Build a new golden image and rebuild (README: Updating Claude Code)." | record
+        exit 1
+    fi
+{{ if .Telegram }}    # The Telegram plugin needs bun and the plugin seed baked into the golden image.
+    # Without them claude would start and the channel would silently never come up.
+    if [ ! -x "{{ .BunPath }}" ] || [ ! -d "{{ .SeedDir }}/cache" ]; then
+        echo "=== $(date -Iseconds) bun or the plugin seed is missing: this instance's golden image predates zero-touch Telegram setup. Set a new golden_image.name, run motoko build, then motoko rebuild this instance (README: Updating Claude Code)." | record
+        exit 1
+    fi
+{{ end }}    exit 0
 fi
 
 "$CLAUDE" "$@"
