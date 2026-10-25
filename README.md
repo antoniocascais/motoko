@@ -207,7 +207,7 @@ python3 -I pkg/vm/seed/gen-telegram-manifest.py anthropics/claude-plugins-offici
 
 Run it from the repo root with an authenticated `gh`. For the current pin the invocation is `... anthropics/claude-plugins-official 1e96c6b0a0f06cad576086243f3d06397c4ddf44 external_plugins/telegram`.
 
-**Also re-check on every plugin bump:** in the new `server.ts`, the exit on a missing bot token must still come BEFORE the PID guard that stops an already-running poller. Managed settings enable the plugin for every `claude` session, and interactive shells have no token, so that ordering is the only thing stopping an interactive session from taking the bot away from the service. If the order changed, do not bump until the cloud-init split is rethought.
+**Also re-check on every plugin bump:** in the new `server.ts`, the exit on a missing bot token must still come BEFORE the PID guard that stops an already-running poller. Managed settings enable the plugin for every `claude` session, and interactive shells and the tmux server have no token (it is passed only to the service's `claude`), so that ordering is the only thing stopping an interactive session from taking the bot away from the service. If the order changed, do not bump until the cloud-init split is rethought.
 
 The current manifest was generated from upstream commit `1e96c6b0a0f06cad576086243f3d06397c4ddf44`. `node_modules` is covered by the plugin's frozen `bun.lock`. The marketplace commit actually installed is printed in the build output (`motoko-seed marketplace-commit`) but not enforced.
 

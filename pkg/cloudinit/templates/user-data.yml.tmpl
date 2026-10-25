@@ -20,12 +20,20 @@ write_files:
       Acquire::http::Proxy "{{ .ProxyURL }}";
       Acquire::https::Proxy "{{ .ProxyURL }}";
 {{/*
-  LOAD-BEARING: TELEGRAM_BOT_TOKEN goes ONLY in ~/.claude-env (0600, service
-  EnvironmentFile), never in /etc/environment, managed settings, the alias or a
-  state-dir dotenv file. Managed settings enable the telegram plugin for every
-  claude session, so an interactive session spawns server.ts too. Without a
-  token it exits at the token check, before the PID guard that SIGTERMs the
-  running poller. With the token in an interactive shell it would steal the bot.
+  LOAD-BEARING: TELEGRAM_BOT_TOKEN goes ONLY in ~/.telegram-token (0600, token
+  alone), read by claude-run.sh and handed to the one claude process it starts.
+  Never in /etc/environment, managed settings, the alias, a state-dir dotenv
+  file, nor the service's EnvironmentFile or any Environment= line. Managed
+  settings enable the telegram plugin for every claude session, so any claude
+  whose environment holds the token spawns server.ts, whose PID guard SIGTERMs
+  the service's poller and takes the bot. Without a token it exits at the token
+  check, before that guard. The unit environment must stay token-free because
+  tmux copies the environment it starts with into its global environment, and
+  every new window or session on that server (tmux attach, then C-b c) would
+  inherit it.
+  Residual risk: claude's own subprocesses (the agent's Bash tool) inherit the
+  token, so the agent running `claude` or `claude -p` would steal the poller.
+  The VM's CLAUDE.md tells the agent never to.
 */}}
   - path: /etc/environment
     content: |
@@ -76,13 +84,16 @@ write_files:
   - path: /home/{{ .VMUser }}/.claude-env
     permissions: "0600"
     content: |
-{{ if .TelegramBotToken }}      TELEGRAM_BOT_TOKEN={{ .TelegramBotToken }}
-      CLAUDE_CODE_PLUGIN_SEED_DIR={{ .SeedDir }}
+{{ if .TelegramBotToken }}      CLAUDE_CODE_PLUGIN_SEED_DIR={{ .SeedDir }}
       TELEGRAM_STATE_DIR={{ .TelegramStateDir }}
 {{ end }}      https_proxy={{ .ProxyURL }}
       HTTPS_PROXY={{ .ProxyURL }}
       DISABLE_UPDATES=1
-  - path: /home/{{ .VMUser }}/.bash_aliases
+{{ if .TelegramBotToken }}  - path: {{ .TokenFile }}
+    permissions: "0600"
+    content: |
+      {{ .TelegramBotToken }}
+{{ end }}  - path: /home/{{ .VMUser }}/.bash_aliases
     content: |
       alias claude='/usr/bin/claude --dangerously-skip-permissions'
   - path: /home/{{ .VMUser }}/CLAUDE.md

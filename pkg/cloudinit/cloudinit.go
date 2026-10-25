@@ -39,6 +39,8 @@ type InstanceParams struct {
 
 	// SeedDir is the plugin seed baked into the golden image.
 	SeedDir string
+	// TokenFile is where cloud-init writes the bot token (see scriptData).
+	TokenFile string
 	// TelegramStateDir is the plugin's state (access allowlist, inbox) on the
 	// data disk, so pairing survives a rebuild.
 	TelegramStateDir string
@@ -122,7 +124,7 @@ func NewInstanceParams(cfg *config.Config, name, hostname, telegramToken string,
 
 	proxyURL := fmt.Sprintf("http://%s:%d", cfg.Network.BridgeIP, cfg.Proxy.Port)
 
-	claudeMD, err := renderClaudeMD(cfg.Network.BridgeIP, cfg.Proxy.Port, persona)
+	claudeMD, err := renderClaudeMD(cfg.Network.BridgeIP, cfg.Proxy.Port, telegramToken != "", persona)
 	if err != nil {
 		return nil, fmt.Errorf("rendering CLAUDE.md: %w", err)
 	}
@@ -133,7 +135,10 @@ func NewInstanceParams(cfg *config.Config, name, hostname, telegramToken string,
 		Telegram bool
 		BunPath  string
 		SeedDir  string
-	}{cfg.VMUser, telegram, config.BunPath, config.SeedDir}
+		// TokenFile holds the bot token alone, read by claude-run.sh. It stays
+		// out of the unit's EnvironmentFile so the tmux server never sees it.
+		TokenFile string
+	}{cfg.VMUser, telegram, config.BunPath, config.SeedDir, "/home/" + cfg.VMUser + "/.telegram-token"}
 
 	home := "/home/" + cfg.VMUser
 	dataDir := home + "/data"
@@ -177,6 +182,7 @@ func NewInstanceParams(cfg *config.Config, name, hostname, telegramToken string,
 		ClaudeRunSh:       runSh,
 		CmdQueueSh:        queueSh,
 		SeedDir:           config.SeedDir,
+		TokenFile:         scriptData.TokenFile,
 		TelegramStateDir:  dataDir + "/telegram",
 		ManagedSettings:   settings,
 		ClaudeJSON:        claudeJSONBody,
@@ -248,11 +254,12 @@ func BuildISO(userdata, metadata []byte, outPath string) error {
 	return nil
 }
 
-func renderClaudeMD(bridgeIP string, proxyPort int, persona string) (string, error) {
+func renderClaudeMD(bridgeIP string, proxyPort int, telegram bool, persona string) (string, error) {
 	data := struct {
 		BridgeIP  string
 		ProxyPort int
-	}{bridgeIP, proxyPort}
+		Telegram  bool
+	}{bridgeIP, proxyPort, telegram}
 
 	result, err := renderEmbedded(templateFS, tmplClaudeMD, data)
 	if err != nil {

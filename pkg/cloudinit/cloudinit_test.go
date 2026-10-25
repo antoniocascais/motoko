@@ -429,10 +429,10 @@ func TestRenderUserData_WriteFilesCount(t *testing.T) {
 	output := renderUserData(t, testParams(t))
 	// Expected: sysctl, apt proxy, environment, managed settings, claude.json,
 	// hosts, systemd service, claude-env, bash_aliases, CLAUDE.md,
-	// claude-restart.sh, claude-run.sh, cmd-queue.sh
+	// claude-restart.sh, claude-run.sh, cmd-queue.sh, token file
 	count := strings.Count(output, "  - path: /")
-	if count != 13 {
-		t.Errorf("write_files should have 13 entries, got %d", count)
+	if count != 14 {
+		t.Errorf("write_files should have 14 entries, got %d", count)
 	}
 }
 
@@ -648,7 +648,8 @@ func TestRenderUserData_NoTelegram_AliasWithoutChannels(t *testing.T) {
 
 func TestRenderUserData_NoTelegram_WriteFilesCount(t *testing.T) {
 	output := renderUserData(t, testParamsNoTelegram(t))
-	// The same set as with telegram: the toggle only changes file contents.
+	// The same set as with telegram minus the token file; the toggle otherwise
+	// only changes file contents.
 	count := strings.Count(output, "  - path: /")
 	if count != 13 {
 		t.Errorf("write_files without telegram should have 13 entries, got %d", count)

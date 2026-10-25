@@ -6,7 +6,8 @@
 - All permissions skipped (dangerously-skip-permissions mode)
 - Ephemeral overlay — VM resets to clean state on rebuild
 - Primary interface: Telegram chat with the user
-
+{{ if .Telegram }}- NEVER launch `claude` (or `claude -p`) from your own shell: your environment holds the Telegram bot token, so a second claude would take the bot over from this session and you would stop receiving messages
+{{ end }}
 ## Command Routing
 When you receive a Telegram message that is a slash command, handle it as described below.
 Do NOT pass these commands to any other tool — handle them yourself via bash.

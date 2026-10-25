@@ -219,7 +219,7 @@ func ensureBun(imagesDir string, pin bunPin) (string, error) {
 	}
 	// A verified cache hit is not hashed a second time by the download helper.
 	if !cachedOK {
-		if err := downloadBaseImage(pin.URL, zipPath, checksum); err != nil {
+		if err := downloadVerified(pin.URL, zipPath, checksum); err != nil {
 			return "", fmt.Errorf("fetching bun %s: %w", pin.Version, err)
 		}
 	}

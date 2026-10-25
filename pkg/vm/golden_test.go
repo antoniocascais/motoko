@@ -486,9 +486,9 @@ func TestBuildGoldenImage_GuestfishFailure(t *testing.T) {
 	}
 }
 
-// --- downloadBaseImage tests ---
+// --- downloadVerified tests ---
 
-func TestDownloadBaseImage_AlreadyExistsValidChecksum(t *testing.T) {
+func TestDownloadVerified_AlreadyExistsValidChecksum(t *testing.T) {
 	dir := t.TempDir()
 	content := []byte("existing image data")
 	destPath := filepath.Join(dir, "base.qcow2")
@@ -505,7 +505,7 @@ func TestDownloadBaseImage_AlreadyExistsValidChecksum(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}
 	})
 
-	if err := downloadBaseImage("http://example.com/base.qcow2", destPath, checksum); err != nil {
+	if err := downloadVerified("http://example.com/base.qcow2", destPath, checksum); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if httpCalled {
@@ -513,14 +513,14 @@ func TestDownloadBaseImage_AlreadyExistsValidChecksum(t *testing.T) {
 	}
 }
 
-func TestDownloadBaseImage_AlreadyExistsBadChecksum(t *testing.T) {
+func TestDownloadVerified_AlreadyExistsBadChecksum(t *testing.T) {
 	dir := t.TempDir()
 	destPath := filepath.Join(dir, "base.qcow2")
 	if err := os.WriteFile(destPath, []byte("image data"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	err := downloadBaseImage("http://example.com/base.qcow2", destPath, "sha512:0000000000000000000000000000000000000000000000000000000000000000")
+	err := downloadVerified("http://example.com/base.qcow2", destPath, "sha512:0000000000000000000000000000000000000000000000000000000000000000")
 	if err == nil {
 		t.Fatal("expected checksum mismatch error")
 	}
@@ -529,7 +529,7 @@ func TestDownloadBaseImage_AlreadyExistsBadChecksum(t *testing.T) {
 	}
 }
 
-func TestDownloadBaseImage_FreshDownload(t *testing.T) {
+func TestDownloadVerified_FreshDownload(t *testing.T) {
 	dir := t.TempDir()
 	destPath := filepath.Join(dir, "base.qcow2")
 	content := []byte("downloaded image content")
@@ -544,7 +544,7 @@ func TestDownloadBaseImage_FreshDownload(t *testing.T) {
 		}
 	})
 
-	if err := downloadBaseImage("http://example.com/base.qcow2", destPath, checksum); err != nil {
+	if err := downloadVerified("http://example.com/base.qcow2", destPath, checksum); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -564,7 +564,7 @@ func TestDownloadBaseImage_FreshDownload(t *testing.T) {
 	}
 }
 
-func TestDownloadBaseImage_HTTPError(t *testing.T) {
+func TestDownloadVerified_HTTPError(t *testing.T) {
 	dir := t.TempDir()
 	destPath := filepath.Join(dir, "base.qcow2")
 
@@ -572,7 +572,7 @@ func TestDownloadBaseImage_HTTPError(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader("error"))}
 	})
 
-	err := downloadBaseImage("http://example.com/base.qcow2", destPath, "sha512:abc")
+	err := downloadVerified("http://example.com/base.qcow2", destPath, "sha512:abc")
 	if err == nil {
 		t.Fatal("expected error for HTTP 500")
 	}
@@ -586,7 +586,7 @@ func TestDownloadBaseImage_HTTPError(t *testing.T) {
 	}
 }
 
-func TestDownloadBaseImage_ChecksumMismatchCleansUp(t *testing.T) {
+func TestDownloadVerified_ChecksumMismatchCleansUp(t *testing.T) {
 	dir := t.TempDir()
 	destPath := filepath.Join(dir, "base.qcow2")
 	content := []byte("image with wrong checksum")
@@ -598,7 +598,7 @@ func TestDownloadBaseImage_ChecksumMismatchCleansUp(t *testing.T) {
 		}
 	})
 
-	err := downloadBaseImage("http://example.com/base.qcow2", destPath, "sha512:0000000000000000000000000000000000000000000000000000000000000000")
+	err := downloadVerified("http://example.com/base.qcow2", destPath, "sha512:0000000000000000000000000000000000000000000000000000000000000000")
 	if err == nil {
 		t.Fatal("expected checksum mismatch error")
 	}
@@ -617,4 +617,3 @@ func TestDownloadBaseImage_ChecksumMismatchCleansUp(t *testing.T) {
 		t.Error("file should not exist after checksum mismatch")
 	}
 }
-

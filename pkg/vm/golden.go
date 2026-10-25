@@ -100,7 +100,7 @@ func BuildGoldenImage(cfg BuildGoldenConfig) error {
 		}
 	}
 
-	if err := downloadBaseImage(cfg.BaseURL, basePath, checksum); err != nil {
+	if err := downloadVerified(cfg.BaseURL, basePath, checksum); err != nil {
 		return fmt.Errorf("downloading base image: %w", err)
 	}
 
@@ -477,9 +477,9 @@ func FetchDebianChecksum(baseURL, filename string) (string, error) {
 	return "", fmt.Errorf("checksum for %q not found in %s", filename, checksumsURL)
 }
 
-// downloadBaseImage fetches the image from url to destPath if it doesn't already exist.
-// Verifies the checksum after download.
-func downloadBaseImage(url, destPath, checksum string) error {
+// downloadVerified fetches a file (base image, bun zip) from url to destPath if
+// it doesn't already exist. Verifies the checksum after download.
+func downloadVerified(url, destPath, checksum string) error {
 	if _, err := os.Stat(destPath); err == nil {
 		// Already downloaded — verify checksum
 		return verifyChecksum(destPath, checksum)

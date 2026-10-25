@@ -7,7 +7,17 @@
 CLAUDE="/usr/bin/claude"
 LOG="/home/{{ .VMUser }}/data/claude-exit.log"
 MAX_BYTES=1048576
+{{ if .Telegram }}TOKEN_FILE="{{ .TokenFile }}"
 
+# Prints the bot token from TOKEN_FILE. The file is data, never sourced: only its
+# first line is read, cut at the first whitespace so a trailing newline, CR or
+# stray blanks cannot end up in the value. Prints nothing if absent or empty.
+read_token() {
+    local tok=""
+    IFS= read -r tok 2>/dev/null < "$TOKEN_FILE"
+    printf '%s' "${tok%%[[:space:]]*}"
+}
+{{ end }}
 # Appends stdin to the log. One rotated generation caps the disk a restart loop
 # can consume, on every path that writes.
 record() {
@@ -36,11 +46,22 @@ if [ "$1" = "--preflight" ]; then
         echo "=== $(date -Iseconds) bun or the plugin seed is missing: this instance's golden image predates zero-touch Telegram setup. Set a new golden_image.name, run motoko build, then motoko rebuild this instance (README: Updating Claude Code)." | record
         exit 1
     fi
+    # The token is not in the unit environment (see the LOAD-BEARING note in
+    # user-data), so without this file claude would start and the bot would
+    # silently never answer.
+    if [ -z "$(read_token)" ]; then
+        echo "=== $(date -Iseconds) the Telegram token file $TOKEN_FILE is missing or empty. Rebuild this instance so cloud-init rewrites it (README: Updating Claude Code)." | record
+        exit 1
+    fi
 {{ end }}    exit 0
 fi
 
-"$CLAUDE" "$@"
-rc=$?
+{{ if .Telegram }}# The token goes to this one claude process only (a command-prefix assignment: not
+# argv, not exported into this shell). Were it in the unit environment, the tmux
+# server would keep it in its global environment and hand it to every window.
+TELEGRAM_BOT_TOKEN="$(read_token)" "$CLAUDE" "$@"
+{{ else }}"$CLAUDE" "$@"
+{{ end }}rc=$?
 
 {
     echo "=== $(date -Iseconds) claude exited with status $rc"

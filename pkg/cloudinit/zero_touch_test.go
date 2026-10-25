@@ -169,7 +169,7 @@ func TestZeroTouch_TokenOnlyInPrivateFiles(t *testing.T) {
 				if n > 0 && f.Permissions != "0600" {
 					t.Errorf("%s holds the token with permissions %q, want 0600", f.Path, f.Permissions)
 				}
-				if n > 0 && f.Path != "/home/"+v.user+"/.claude-env" {
+				if n > 0 && f.Path != "/home/"+v.user+"/.telegram-token" {
 					t.Errorf("token written to unexpected file %s", f.Path)
 				}
 			}
@@ -212,8 +212,21 @@ func TestZeroTouch_EnvironmentSplit(t *testing.T) {
 			if strings.Contains(etc, "TELEGRAM_BOT_TOKEN") {
 				t.Error("/etc/environment is world-readable and must not carry the token")
 			}
-			if v.telegram && !strings.Contains(svc, "TELEGRAM_BOT_TOKEN="+testToken+"\n") {
-				t.Error("service env lacks the token")
+			if strings.Contains(svc, "TELEGRAM_BOT_TOKEN") || strings.Contains(svc, testToken) {
+				t.Error("service env file carries the token; tmux would copy it into its global environment")
+			}
+			tok, tokPerms := "", ""
+			if v.telegram {
+				tok, tokPerms = doc.file(t, "/home/"+v.user+"/.telegram-token")
+				if tok != testToken+"\n" || tokPerms != "0600" {
+					t.Errorf("token file = %q (%s), want the token alone, 0600", tok, tokPerms)
+				}
+			} else {
+				for _, f := range doc.WriteFiles {
+					if strings.HasSuffix(f.Path, "/.telegram-token") {
+						t.Error("token file written without telegram")
+					}
+				}
 			}
 		})
 	}
@@ -599,6 +612,11 @@ func TestZeroTouch_TokenAbsentFromInteractiveSurfaces(t *testing.T) {
 				"/etc/claude-code/managed-settings.json",
 				home + "/.bash_aliases",
 				home + "/.claude.json",
+				// The unit environment is an interactive surface too: tmux copies
+				// the environment it starts with into its global environment, and
+				// every window opened after `tmux attach` inherits that.
+				home + "/.claude-env",
+				home + "/.config/systemd/user/claude-assistant.service",
 			} {
 				content, _ := doc.file(t, path)
 				if strings.Contains(content, "TELEGRAM_BOT_TOKEN") || strings.Contains(content, testToken) {

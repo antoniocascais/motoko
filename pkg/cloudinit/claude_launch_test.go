@@ -139,6 +139,10 @@ func TestRenderUserData_ClaudeRunScriptWritten(t *testing.T) {
 type scriptEnv struct {
 	claude, bun, seed bool
 	setup             func(claudePath, bunPath, seedDir string)
+	// tokenFile is the raw content of the token file. nil = a well-formed file
+	// holding testToken; noTokenFile = no file at all. Ignored without telegram.
+	tokenFile   *string
+	noTokenFile bool
 }
 
 var allPresent = scriptEnv{claude: true, bun: true, seed: true}
@@ -147,8 +151,14 @@ var allPresent = scriptEnv{claude: true, bun: true, seed: true}
 type scriptResult struct {
 	code       int
 	claudeArgs string // "" = claude was not started
-	log        string // exit log; "" = nothing written
-	tmuxRan    bool
+	// tokenSet/tokenSeen: whether claude had TELEGRAM_BOT_TOKEN in its
+	// environment, and its exact value.
+	tokenSet  bool
+	tokenSeen string
+	argv      []string // claude's arguments, one per element
+	output    string   // the script's own stdout and stderr
+	log       string   // exit log; "" = nothing written
+	tmuxRan   bool
 }
 
 // runScript executes the rendered claude-run.sh for params with claude, bun,
@@ -171,7 +181,10 @@ func runScript(t *testing.T, params *InstanceParams, dir, claudeExit string, env
 		}
 	}
 	if env.claude {
-		writeStub(stubClaude, `echo "$@" > "`+filepath.Join(dir, "args")+`"; exit `+claudeExit+"\n")
+		writeStub(stubClaude, `echo "$@" > "`+filepath.Join(dir, "args")+`"
+printf '%s\0' "$@" > "`+filepath.Join(dir, "argv")+`"
+if [ -n "${TELEGRAM_BOT_TOKEN+x}" ]; then printf '%s' "$TELEGRAM_BOT_TOKEN" > "`+filepath.Join(dir, "token-seen")+`"; fi
+exit `+claudeExit+"\n")
 	}
 	writeStub(stubTmux, `touch "`+filepath.Join(dir, "tmux-ran")+`"; echo FINAL-SCREEN`+"\n")
 	if env.bun {
@@ -182,6 +195,16 @@ func runScript(t *testing.T, params *InstanceParams, dir, claudeExit string, env
 			t.Fatal(err)
 		}
 	}
+	tokenPath := filepath.Join(dir, "telegram-token")
+	if !env.noTokenFile {
+		content := testToken + "\n"
+		if env.tokenFile != nil {
+			content = *env.tokenFile
+		}
+		if err := os.WriteFile(tokenPath, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if env.setup != nil {
 		env.setup(stubClaude, stubBun, seedDir)
 	}
@@ -189,6 +212,7 @@ func runScript(t *testing.T, params *InstanceParams, dir, claudeExit string, env
 	script := params.ClaudeRunSh
 	script = strings.ReplaceAll(script, "/usr/local/bin/bun", stubBun)
 	script = strings.ReplaceAll(script, "/opt/claude-seed", seedDir)
+	script = strings.ReplaceAll(script, params.TokenFile, tokenPath)
 	script = strings.Replace(script, "/usr/bin/claude", stubClaude, 1)
 	script = strings.Replace(script, "/usr/bin/tmux", stubTmux, 1)
 	script = strings.Replace(script, "/home/claude/data/claude-exit.log", filepath.Join(dir, "exit.log"), 1)
@@ -198,6 +222,12 @@ func runScript(t *testing.T, params *InstanceParams, dir, claudeExit string, env
 	}
 
 	cmd := exec.Command(sh, append([]string{scriptPath}, args...)...)
+	// A token inherited from the developer's shell would fake a pass.
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "TELEGRAM_BOT_TOKEN=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
 	if len(args) > 0 && args[0] == "--preflight" {
 		bin := filepath.Join(dir, "path")
 		if err := os.MkdirAll(bin, 0755); err != nil {
@@ -214,8 +244,8 @@ func runScript(t *testing.T, params *InstanceParams, dir, claudeExit string, env
 		}
 		cmd.Env = []string{"PATH=" + bin}
 	}
-	err = cmd.Run()
-	res := scriptResult{}
+	out, err := cmd.CombinedOutput()
+	res := scriptResult{output: string(out)}
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		res.code = exitErr.ExitCode()
 	} else if err != nil {
@@ -223,6 +253,12 @@ func runScript(t *testing.T, params *InstanceParams, dir, claudeExit string, env
 	}
 	gotArgs, _ := os.ReadFile(filepath.Join(dir, "args"))
 	res.claudeArgs = strings.TrimSpace(string(gotArgs))
+	if seen, err := os.ReadFile(filepath.Join(dir, "token-seen")); err == nil {
+		res.tokenSet, res.tokenSeen = true, string(seen)
+	}
+	if argv, err := os.ReadFile(filepath.Join(dir, "argv")); err == nil && len(argv) > 0 {
+		res.argv = strings.Split(strings.TrimSuffix(string(argv), "\x00"), "\x00")
+	}
 	log, _ := os.ReadFile(filepath.Join(dir, "exit.log"))
 	res.log = string(log)
 	_, statErr := os.Stat(filepath.Join(dir, "tmux-ran"))
